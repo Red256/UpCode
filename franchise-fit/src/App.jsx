@@ -1,11 +1,19 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import MapView from "./components/MapView";
 import AddressInput from "./components/AddressInput";
 import FactorPanel, { FACTOR_DEFAULTS } from "./components/FactorPanel";
-import ScoreCard, { getVerdict } from "./components/ScoreCard";
+import ScoreCard from "./components/ScoreCard";
+import { getVerdict } from "./utils/scoreVerdict";
 import SavedLocations from "./components/SavedLocations";
+import { generateLocationReport } from "./utils/reportGenerator";
+import {
+  fetchTractHeatmapGeoJson,
+  HEATMAP_METRICS,
+  isUsApprox,
+} from "./utils/tractHeatmap";
+import { fetchAreaMetrics, fetchCountyTrendForReport } from "./utils/censusApi";
+import TractDetailPanel from "./components/TractDetailPanel";
 import "./App.css";
-import supabase from "./utils/supabase";
 
 const DEFAULT_CENTER = [41.9, -87.7];
 const DEFAULT_ZOOM = 10;
@@ -96,7 +104,46 @@ export default function App() {
   let [analyzed, setAnalyzed] = useState(false);
   let [analyzing, setAnalyzing] = useState(false);
   let [analysisResult, setAnalysisResult] = useState(null);
+  let [suggestions, setSuggestions] = useState([]);
+  const [heatmapGeoJson, setHeatmapGeoJson] = useState(null);
+  const [heatmapMetric, setHeatmapMetric] = useState("Median Income");
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
+  const [heatmapError, setHeatmapError] = useState(null);
+  const [selectedTract, setSelectedTract] = useState(null);
 
+  const heatmapField =
+    HEATMAP_METRICS.find((m) => m.key === heatmapMetric)?.field ?? "income";
+
+  /** Load tract choropleth whenever the map center / radius changes (default view included). */
+  useEffect(() => {
+    if (!isUsApprox(center[0], center[1])) {
+      setHeatmapGeoJson(null);
+      setHeatmapError("Tract heatmap only available for U.S. locations.");
+      setHeatmapLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setHeatmapError(null);
+    (async () => {
+      setHeatmapLoading(true);
+      try {
+        const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi);
+        if (cancelled) return;
+        setHeatmapGeoJson(fc);
+        setHeatmapError(null);
+      } catch {
+        if (!cancelled) {
+          setHeatmapGeoJson({ type: "FeatureCollection", features: [] });
+          setHeatmapError(null);
+        }
+      } finally {
+        if (!cancelled) setHeatmapLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [center, radiusMi]);
 
   async function geocodeAddress(address) {
     const res = await fetch(
@@ -112,6 +159,8 @@ export default function App() {
       displayName: data[0].display_name,
     };
   }
+
+  /* Nearby suggestions feature disabled - would require additional Census API calls */
 
   const persistSaved = (list) => {
     setSaved(list);
@@ -147,47 +196,79 @@ export default function App() {
     setAnalyzing(true);
     setAnalyzed(false);
     setAnalysisResult(null);
-    console.log(factors)
-    const geo = await geocodeAddress(location);
-    const lat = geo.lat
-    const lon = geo.lng
-    const {data: income} = await supabase.rpc("calculate_income", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: home_value} = await supabase.rpc("calculate_home_value", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: rent} = await supabase.rpc("calculate_rent", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: schools} = await supabase.rpc("schools_within_radius", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
+    setHeatmapGeoJson(null);
+    setHeatmapError(null);
+    setSelectedTract(null);
+    setSuggestions([]);
 
-    const {data: income_score} = await supabase.rpc("calculate_income_score", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: home_value_score} = await supabase.rpc("calculate_home_value_score", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: rent_score} = await supabase.rpc("calculate_rent_score", {center_lat: lat, center_lon: lon, radius_meters: radiusMi*1609.34});
-    const {data: school_score, error} = await supabase.rpc("schools_within_radius_score", {center_lat: lat, center_lon: lon, radius_miles: radiusMi});
-    // Mock analysis with a fake delay
-    setTimeout(() => {
-      const scores = {
-        ["Median Income"]: income_score, 
-        ["Median Rent"]: rent_score, 
-        ["Median Home Value"]: home_value_score,
-        ["School"]: school_score
-      };
-      const raw_values = {
-        ["Median Income"]: "$"+income, 
-        ["Median Rent"]: "$"+rent, 
-        ["Median Home Value"]: "$"+home_value,
-        ["School"]: schools.length + " schools"
-      };
+    try {
+      const geo = await geocodeAddress(location);
+      if (!geo) {
+        alert("Could not find that location. Please try a different address.");
+        setAnalyzing(false);
+        return;
+      }
+      const lat = geo.lat;
+      const lng = geo.lng;
+
+      setCenter([lat, lng]);
+      setZoom(12);
+
+      const areaData = await fetchAreaMetrics(lat, lng, radiusMi);
+
+      const scores = areaData.scores;
+      const raw_values = {};
+      for (const key of Object.keys(scores)) {
+        raw_values[key] = areaData.rawValues[key];
+      }
+
       const weightedResult = computeWeightedScore(factors, scores, raw_values);
       if (!weightedResult) {
         setAnalyzing(false);
         return;
       }
 
+      let projection = null;
+      if (areaData.projection?.factorScores) {
+        const projWeighted = computeWeightedScore(
+          factors,
+          areaData.projection.factorScores,
+          areaData.projection.rawValues
+        );
+        if (projWeighted) {
+          const hy = areaData.projection.historyYears;
+          const range =
+            Array.isArray(hy) && hy.length > 0
+              ? `${hy[0]}–${hy[hy.length - 1]}`
+              : "";
+          projection = {
+            horizonYear: areaData.projection.horizonYear,
+            overall: projWeighted.overall,
+            raw_values: projWeighted.breakdown,
+            factorScores: areaData.projection.factorScores,
+            deltaOverall: projWeighted.overall - weightedResult.overall,
+            historyYears: areaData.projection.historyYears,
+            sourceNote: `Projected from linear trends on county-level ACS (${range}). Not a forecast of market cycles.`,
+          };
+        }
+      }
+
       setAnalysisResult({
         factorScores: scores,
         overall: weightedResult.overall,
         raw_values: weightedResult.breakdown,
+        tractCount: areaData.tractCount,
+        dataSource: areaData.dataSource,
+        acsDatasetYear: areaData.year,
+        projection,
       });
-      setAnalyzing(false);
       setAnalyzed(true);
-    }, 0);
+    } catch (err) {
+      console.error("Analysis error:", err);
+      alert(err.message || "Analysis failed. Please try again.");
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const handleSave = () => {
@@ -220,6 +301,17 @@ export default function App() {
 
   const handleDelete = (id) => {
     persistSaved(saved.filter((s) => s.id !== id));
+  };
+
+  const handleSelectSuggestion = (suggestion) => {
+    setLocation(suggestion.displayName);
+    setCenter([suggestion.lat, suggestion.lng]);
+    setZoom(12);
+    setPopupText(suggestion.displayName);
+    setLocationSet(true);
+    setSuggestions([]);
+    setAnalyzed(false);
+    setAnalysisResult(null);
   };
 
   const handleExport = () => {
@@ -276,6 +368,32 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  const handleDownloadReport = async () => {
+    if (!analysisResult) return;
+    
+    try {
+      const { captureMapToDataUrl } = await import("./utils/mapCapture");
+      const mapSnapshot = await captureMapToDataUrl(center, zoom);
+      const trendData = await fetchCountyTrendForReport(center[1], center[0]);
+      const pdf = await generateLocationReport(
+        location,
+        analysisResult,
+        factors,
+        radiusMi,
+        center,
+        suggestions,
+        mapSnapshot,
+        trendData
+      );
+      
+      const filename = `FranchiseFit_Report_${location.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+      pdf.save(filename);
+    } catch (error) {
+      console.error('Error generating report:', error);
+      alert('Failed to generate report. Please try again.');
+    }
+  };
+
   const enabledCount = Object.values(factors).filter((f) => f.enabled).length;
 
   return (
@@ -285,7 +403,21 @@ export default function App() {
         zoom={zoom}
         radiusMi={radiusMi}
         popupText={popupText}
+        heatmapData={heatmapGeoJson}
+        heatmapMetric={heatmapMetric}
+        heatmapField={heatmapField}
+        heatmapLoading={heatmapLoading}
+        heatmapError={heatmapError}
+        onHeatmapMetricChange={setHeatmapMetric}
+        onTractClick={setSelectedTract}
       />
+
+      {selectedTract && (
+        <TractDetailPanel
+          tract={selectedTract}
+          onClose={() => setSelectedTract(null)}
+        />
+      )}
 
       <div className="panel">
         {/* Header */}
@@ -368,6 +500,64 @@ export default function App() {
           <ScoreCard factors={factors} analysisResult={analysisResult} />
         )}
 
+        {/* Nearby Suggestions */}
+        {analyzed && suggestions.length > 0 && (
+          <div className="card">
+            <div className="card-label">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+              Better Locations Nearby
+            </div>
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
+              Found {suggestions.length} location{suggestions.length > 1 ? 's' : ''} with higher scores within 5 miles
+            </div>
+            {suggestions.map((suggestion, idx) => (
+              <div
+                key={idx}
+                onClick={() => handleSelectSuggestion(suggestion)}
+                style={{
+                  padding: '12px',
+                  background: '#f9fafb',
+                  borderRadius: '8px',
+                  marginBottom: '8px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  border: '1px solid #e5e7eb'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#f3f4f6';
+                  e.currentTarget.style.borderColor = '#d1d5db';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = '#f9fafb';
+                  e.currentTarget.style.borderColor = '#e5e7eb';
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '14px', fontWeight: '500', color: '#111827', marginBottom: '4px' }}>
+                      {suggestion.displayName.split(',').slice(0, 2).join(',')}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                      {suggestion.distance.toFixed(1)} mi away
+                    </div>
+                  </div>
+                  <div style={{
+                    fontSize: '18px',
+                    fontWeight: '600',
+                    color: suggestion.score >= 75 ? '#10b981' : suggestion.score >= 60 ? '#3b82f6' : '#6b7280',
+                    marginLeft: '12px'
+                  }}>
+                    {suggestion.score}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Save button — only after analysis */}
         {analyzed && analysisResult && (
           <div className="card">
@@ -382,6 +572,23 @@ export default function App() {
                 <polyline points="7 3 7 8 15 8" />
               </svg>
               Save Location
+            </button>
+            <button
+              className="save-btn"
+              onClick={handleDownloadReport}
+              style={{ 
+                marginTop: '8px', 
+                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.25)'
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <polyline points="9 15 12 18 15 15" />
+              </svg>
+              Download PDF Report
             </button>
           </div>
         )}

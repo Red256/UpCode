@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, startTransition } from "react";
 import { useAutocomplete } from "../hooks/useAutocomplete";
 
 export default function AddressInput({ value, onChange, onSelect }) {
@@ -20,7 +20,7 @@ export default function AddressInput({ value, onChange, onSelect }) {
   }, []);
 
   useEffect(() => {
-    setActiveIndex(-1);
+    startTransition(() => setActiveIndex(-1));
   }, [suggestions]);
 
   function handleKeyDown(e) {

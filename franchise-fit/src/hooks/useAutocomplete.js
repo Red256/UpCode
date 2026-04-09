@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, startTransition } from "react";
 import { useDebounce } from "./useDebounce";
 
 export function useAutocomplete(query) {
@@ -9,12 +9,14 @@ export function useAutocomplete(query) {
 
   useEffect(() => {
     if (!debouncedQuery || debouncedQuery.length < 2) {
-      setSuggestions([]);
-      setLoading(false);
+      startTransition(() => {
+        setSuggestions([]);
+        setLoading(false);
+      });
       return;
     }
 
-    setLoading(true);
+    startTransition(() => setLoading(true));
 
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
