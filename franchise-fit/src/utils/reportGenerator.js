@@ -142,6 +142,13 @@ function drawRoundedRect(pdf, x, y, w, h, r, style = 'F') {
   pdf.roundedRect(x, y, w, h, r, r, style);
 }
 
+/** Yield until after the next paint (no fixed ms delay). */
+function waitNextPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+}
+
 function addPageFooter(pdf, pageNum, totalPages) {
   const w = pageWidth(pdf);
   const h = pdf.internal.pageSize.getHeight();
@@ -230,19 +237,20 @@ async function createChart(type, labels, data, title, width = 400, height = 220)
         };
 
   const chart = new Chart(canvas, config);
-  await new Promise((r) => setTimeout(r, 150));
+  await waitNextPaint();
   const imgData = canvas.toDataURL('image/png');
   chart.destroy();
   document.body.removeChild(canvas);
   return imgData;
 }
 
-/** Match censusApi NATIONAL_BENCHMARKS for normalized 0–100 trend lines on one chart */
+/** Normalization ranges for trend chart visualization (0-100 scale) */
 const TREND_BENCH = {
   income: { min: 25000, max: 150000 },
   rent: { min: 500, max: 2500 },
   homeValue: { min: 100000, max: 800000 },
-  education: { min: 10, max: 60 }
+  /** Tract-level enrolled population (typical range for aggregated area) */
+  studentPopulation: { min: 100, max: 5000 }
 };
 
 function normTrendScore(val, bench) {
@@ -293,8 +301,8 @@ async function createTrendLineChart(history, title) {
       spanGaps: true
     },
     {
-      label: 'Education',
-      data: history.map((h) => normTrendScore(h.education, TREND_BENCH.education)),
+      label: 'Student population',
+      data: history.map((h) => normTrendScore(h.studentPopulation, TREND_BENCH.studentPopulation)),
       borderColor: 'rgb(251, 146, 60)',
       backgroundColor: 'rgba(251, 146, 60, 0.06)',
       tension: 0.2,
@@ -321,7 +329,7 @@ async function createTrendLineChart(history, title) {
       }
     }
   });
-  await new Promise((r) => setTimeout(r, 160));
+  await waitNextPaint();
   const imgData = canvas.toDataURL('image/png');
   chart.destroy();
   document.body.removeChild(canvas);
@@ -340,7 +348,7 @@ function buildTrendNarrativeBullets(history) {
   const pi = pct(last.income, first.income);
   const pr = pct(last.rent, first.rent);
   const ph = pct(last.homeValue, first.homeValue);
-  const pe = pct(last.education, first.education);
+  const ps = pct(last.studentPopulation, first.studentPopulation);
   if (pi != null) {
     out.push(
       `Median household income ${pi >= 0 ? 'rose' : 'fell'} about ${Math.abs(pi)}% from ${first.year} to ${last.year} (county ACS 5-year).`
@@ -352,9 +360,9 @@ function buildTrendNarrativeBullets(history) {
   if (ph != null) {
     out.push(`Median home value ${ph >= 0 ? 'increased' : 'decreased'} about ${Math.abs(ph)}%.`);
   }
-  if (pe != null) {
+  if (ps != null) {
     out.push(
-      `Share of adults 25+ with bachelor's or higher ${pe >= 0 ? 'rose' : 'fell'} about ${Math.abs(pe)} percentage points (relative to the earlier estimate).`
+      `Student population (people enrolled in school, ACS) ${ps >= 0 ? 'rose' : 'fell'} about ${Math.abs(ps)}% from ${first.year} to ${last.year}.`
     );
   }
   return out.slice(0, 4);
@@ -365,9 +373,9 @@ function fmtTrendUsd(n) {
   return `$${Math.round(Number(n)).toLocaleString('en-US')}`;
 }
 
-function fmtTrendEdu(n) {
+function fmtTrendStudentCount(n) {
   if (n == null || Number.isNaN(Number(n))) return '—';
-  return `${Number(n).toFixed(1)}%`;
+  return Math.round(Number(n)).toLocaleString('en-US');
 }
 
 /** Match App weighted overall for projected factor scores (when only raw projection object is available). */
@@ -830,7 +838,7 @@ export async function generateLocationReport(
       pdf.text('Med. income', cx[1], ty);
       pdf.text('Med. rent', cx[2], ty);
       pdf.text('Med. home', cx[3], ty);
-      pdf.text('Bach.+ %', cx[4], ty);
+      pdf.text('Students', cx[4], ty);
       ty += 5;
       pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(...COLORS.gray);
@@ -841,7 +849,7 @@ export async function generateLocationReport(
         pdf.text(fmtTrendUsd(row.income), cx[1], ty);
         pdf.text(fmtTrendUsd(row.rent), cx[2], ty);
         pdf.text(fmtTrendUsd(row.homeValue), cx[3], ty);
-        pdf.text(fmtTrendEdu(row.education), cx[4], ty);
+        pdf.text(fmtTrendStudentCount(row.studentPopulation), cx[4], ty);
         ty += 4.5;
       });
       ty += 6;

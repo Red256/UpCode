@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import MapView from "./components/MapView";
 import AddressInput from "./components/AddressInput";
 import FactorPanel, { FACTOR_DEFAULTS } from "./components/FactorPanel";
@@ -12,11 +12,17 @@ import {
   isUsApprox,
 } from "./utils/tractHeatmap";
 import { fetchAreaMetrics, fetchCountyTrendForReport } from "./utils/censusApi";
+import { ACS_HISTORY_YEARS } from "./utils/censusConstants";
 import TractDetailPanel from "./components/TractDetailPanel";
+import CelebrationOverlay from "./components/CelebrationOverlay";
 import "./App.css";
 
-const DEFAULT_CENTER = [41.9, -87.7];
-const DEFAULT_ZOOM = 10;
+/** Default search text + map seed (West Town / Ukrainian Village, Chicago) */
+const DEFAULT_LOCATION =
+  "1017, North Richmond Street, West Town, Chicago, West Chicago Township, Cook County, Illinois, 60622, United States";
+const DEFAULT_CENTER = [41.9019, -87.6868];
+const DEFAULT_POPUP = "1017 N Richmond St — West Town, Chicago";
+const DEFAULT_ZOOM = 13;
 const SCORE_BASE = 1.0;
 
 function buildInitialFactors() {
@@ -93,14 +99,14 @@ function parseCsvLine(line) {
 }
 
 export default function App() {
-  let [location, setLocation] = useState("");
+  let [location, setLocation] = useState(DEFAULT_LOCATION);
   let [center, setCenter] = useState(DEFAULT_CENTER);
   let [zoom, setZoom] = useState(DEFAULT_ZOOM);
   let [radiusMi, setRadiusMi] = useState(5);
-  let [popupText, setPopupText] = useState("Chicago (default)");
+  let [popupText, setPopupText] = useState(DEFAULT_POPUP);
   let [factors, setFactors] = useState(buildInitialFactors);
   let [saved, setSaved] = useState(loadSaved);
-  let [locationSet, setLocationSet] = useState(false);
+  let [locationSet, setLocationSet] = useState(true);
   let [analyzed, setAnalyzed] = useState(false);
   let [analyzing, setAnalyzing] = useState(false);
   let [analysisResult, setAnalysisResult] = useState(null);
@@ -110,6 +116,8 @@ export default function App() {
   const [heatmapLoading, setHeatmapLoading] = useState(false);
   const [heatmapError, setHeatmapError] = useState(null);
   const [selectedTract, setSelectedTract] = useState(null);
+  const [celebrationBurst, setCelebrationBurst] = useState(0);
+  const eliteConfettiPlayedRef = useRef(false);
 
   const heatmapField =
     HEATMAP_METRICS.find((m) => m.key === heatmapMetric)?.field ?? "income";
@@ -237,10 +245,19 @@ export default function App() {
         );
         if (projWeighted) {
           const hy = areaData.projection.historyYears;
-          const range =
-            Array.isArray(hy) && hy.length > 0
-              ? `${hy[0]}–${hy[hy.length - 1]}`
-              : "";
+          const fallbackYears = [...ACS_HISTORY_YEARS]
+            .map((y) => parseInt(y, 10))
+            .sort((a, b) => a - b);
+          const ys =
+            Array.isArray(hy) && hy.length > 0 ? [...hy].sort((a, b) => a - b) : fallbackYears;
+          const range = ys.length ? `${ys[0]}–${ys[ys.length - 1]}` : "";
+          const isTractAgg = areaData.projection.source === "tract_aggregate";
+          const lead = isTractAgg
+            ? "Projected from linear trends on tract-level ACS history"
+            : "Projected from linear trends on county-level ACS history";
+          const sourceNote = range
+            ? `${lead} (${range}). Not a forecast of market cycles.`
+            : `${lead}. Not a forecast of market cycles.`;
           projection = {
             horizonYear: areaData.projection.horizonYear,
             overall: projWeighted.overall,
@@ -248,7 +265,7 @@ export default function App() {
             factorScores: areaData.projection.factorScores,
             deltaOverall: projWeighted.overall - weightedResult.overall,
             historyYears: areaData.projection.historyYears,
-            sourceNote: `Projected from linear trends on county-level ACS (${range}). Not a forecast of market cycles.`,
+            sourceNote,
           };
         }
       }
@@ -263,6 +280,10 @@ export default function App() {
         projection,
       });
       setAnalyzed(true);
+      if (weightedResult.overall >= 85 && !eliteConfettiPlayedRef.current) {
+        eliteConfettiPlayedRef.current = true;
+        setCelebrationBurst((n) => n + 1);
+      }
     } catch (err) {
       console.error("Analysis error:", err);
       alert(err.message || "Analysis failed. Please try again.");
@@ -395,9 +416,12 @@ export default function App() {
   };
 
   const enabledCount = Object.values(factors).filter((f) => f.enabled).length;
+  const eliteScore =
+    analyzed && analysisResult != null && analysisResult.overall >= 85;
 
   return (
-    <div className="app">
+    <div className={`app${eliteScore ? " app--elite-score" : ""}`}>
+      <CelebrationOverlay burstKey={celebrationBurst} />
       <MapView
         center={center}
         zoom={zoom}
@@ -410,6 +434,7 @@ export default function App() {
         heatmapError={heatmapError}
         onHeatmapMetricChange={setHeatmapMetric}
         onTractClick={setSelectedTract}
+        eliteScore={eliteScore}
       />
 
       {selectedTract && (
@@ -419,7 +444,7 @@ export default function App() {
         />
       )}
 
-      <div className="panel">
+      <div className={`panel${eliteScore ? " panel--elite" : ""}`}>
         {/* Header */}
         <div className="header">
           <div className="brand">

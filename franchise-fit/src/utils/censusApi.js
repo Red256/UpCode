@@ -1,47 +1,67 @@
 /**
  * Census API utilities — area scores from ACS + tract choropleth data.
- * Analyze uses the same tract features as the map (TIGERweb + ACS), not a random county slice.
+ * Hybrid mode: Uses online geocoding/autocomplete but offline Census data.
  */
 
 import { fetchTractHeatmapGeoJson } from './tractHeatmap';
 import { ACS_DATASET_YEAR, ACS_HISTORY_YEARS } from './censusConstants';
+import { fetchCountyAcsRow } from './offlineData';
+import nationalTractZStats from '../data/nationalTractZStats.json';
+import { scoreStudentRegion } from './studentRegionScore';
+import { circleAreaSqMi } from './tractAreaUnits';
 
 /** @deprecated use ACS_HISTORY_YEARS from censusConstants */
 export const ACS_YEARS = ACS_HISTORY_YEARS;
-/** Years ahead to project scores using linear trend on county-level ACS history */
+/** Years ahead for area projection (tract-aggregate linear trend on ACS history). */
 const PROJECTION_YEARS_AHEAD = 3;
 
-const ACS_VARIABLES = {
-  income: 'B19013_001E',
-  rent: 'B25064_001E',
-  homeValue: 'B25077_001E',
-  population: 'B01003_001E',
-  eduTotal: 'B15003_001E',
-  eduBachelors: 'B15003_022E',
-  eduMasters: 'B15003_023E',
-  eduProfessional: 'B15003_024E',
-  eduDoctorate: 'B15003_025E',
-};
+// ACS_VARIABLES removed - using offline data
 
-const NATIONAL_BENCHMARKS = {
+/** Fallback benchmarks when z-stats unavailable */
+const FALLBACK_BENCHMARKS = {
   income: { min: 25000, max: 150000, median: 75000 },
   rent: { min: 500, max: 2500, median: 1200 },
   homeValue: { min: 100000, max: 800000, median: 350000 },
-  education: { min: 10, max: 60, median: 33 },
+  studentPopulation: { min: 100, max: 5000, median: 1500 },
 };
 
-function scoreValue(value, benchmark) {
+/** Convert z-score to 0-100 score (z=0 → 50, z=+2 → 100, z=-2 → 0) */
+function zToScore(z) {
+  if (z == null || Number.isNaN(z)) return 50;
+  const s = 50 + 25 * z;
+  return Math.max(0, Math.min(100, Math.round(s)));
+}
+
+function scoreValueFromZStats(value, metricKey) {
   if (value == null || Number.isNaN(value)) return 50;
-  const { min, max } = benchmark;
-  const clamped = Math.max(min, Math.min(max, value));
-  return Math.round(((clamped - min) / (max - min)) * 100);
+
+  const stats = nationalTractZStats[metricKey];
+  const median = stats?.median ?? stats?.mu;
+  if (!stats || median == null || stats.sigma == null || stats.sigma <= 0) {
+    // Fallback to min/max if z-stats unavailable
+    const benchmark = FALLBACK_BENCHMARKS[metricKey];
+    if (!benchmark) return 50;
+    const { min, max } = benchmark;
+    const clamped = Math.max(min, Math.min(max, value));
+    return Math.round(((clamped - min) / (max - min)) * 100);
+  }
+
+  const z = (value - median) / stats.sigma;
+  return zToScore(z);
 }
 
 function neutralAreaMetrics(year) {
   return {
     year,
     tractCount: 0,
-    metrics: { income: null, rent: null, homeValue: null, education: null },
+    metrics: {
+      income: null,
+      rent: null,
+      homeValue: null,
+      studentPopulation: null,
+      studentTractCount: null,
+      studentRegionAreaSqMi: null,
+    },
     scores: {
       'Median Income': 50,
       'Median Rent': 50,
@@ -61,11 +81,18 @@ function neutralAreaMetrics(year) {
 }
 
 function metricsToScores(metrics) {
+  const school =
+    metrics.studentPopulation != null &&
+    metrics.studentRegionAreaSqMi != null &&
+    metrics.studentRegionAreaSqMi > 0
+      ? scoreStudentRegion(metrics.studentPopulation, metrics.studentRegionAreaSqMi)
+      : 50;
+
   return {
-    'Median Income': scoreValue(metrics.income, NATIONAL_BENCHMARKS.income),
-    'Median Rent': scoreValue(metrics.rent, NATIONAL_BENCHMARKS.rent),
-    'Median Home Value': scoreValue(metrics.homeValue, NATIONAL_BENCHMARKS.homeValue),
-    School: scoreValue(metrics.education, NATIONAL_BENCHMARKS.education),
+    'Median Income': scoreValueFromZStats(metrics.income, 'income'),
+    'Median Rent': scoreValueFromZStats(metrics.rent, 'rent'),
+    'Median Home Value': scoreValueFromZStats(metrics.homeValue, 'homeValue'),
+    School: school,
   };
 }
 
@@ -74,12 +101,35 @@ function metricsToRawValues(metrics) {
     'Median Income': metrics.income != null ? `$${Math.round(metrics.income).toLocaleString()}` : '—',
     'Median Rent': metrics.rent != null ? `$${Math.round(metrics.rent).toLocaleString()}` : '—',
     'Median Home Value': metrics.homeValue != null ? `$${Math.round(metrics.homeValue).toLocaleString()}` : '—',
-    School: metrics.education != null ? `${metrics.education.toFixed(1)}% bachelor's+` : '—',
+    School:
+      metrics.studentPopulation != null &&
+      metrics.studentRegionAreaSqMi != null &&
+      metrics.studentRegionAreaSqMi > 0
+        ? `${(metrics.studentPopulation / metrics.studentRegionAreaSqMi).toLocaleString('en-US', {
+            maximumFractionDigits: 1,
+            minimumFractionDigits: 0,
+          })} students/sq mi`
+        : '—',
   };
 }
 
-/** Average tract-level ACS values inside the analysis circle (same GeoJSON as the choropleth). */
-function aggregateFromHeatmap(fc) {
+function coalesceFactorScore(v) {
+  if (v == null || Number.isNaN(Number(v))) return 50;
+  return Number(v);
+}
+
+/**
+ * Tract heatmap attaches `areaScoreSummary`: z-score-based 0–100 factor scores per tract,
+ * distance-weighted to area means. Raw `metricMeans` use the same distance weights.
+ */
+function aggregateFromHeatmap(fc, radiusMiles) {
+  if (fc.areaScoreSummary?.metricMeans && fc.areaScoreSummary?.factorScores) {
+    return {
+      metrics: fc.areaScoreSummary.metricMeans,
+      factorScoresOverride: fc.areaScoreSummary.factorScores,
+    };
+  }
+
   const feats = fc?.features || [];
   const incomes = [];
   const rents = [];
@@ -92,16 +142,27 @@ function aggregateFromHeatmap(fc) {
     if (typeof r.income === 'number' && !Number.isNaN(r.income)) incomes.push(r.income);
     if (typeof r.rent === 'number' && !Number.isNaN(r.rent)) rents.push(r.rent);
     if (typeof r.homeValue === 'number' && !Number.isNaN(r.homeValue)) homes.push(r.homeValue);
-    if (typeof r.schoolProxy === 'number' && !Number.isNaN(r.schoolProxy)) edus.push(r.schoolProxy);
+    if (typeof r.studentPopulation === 'number' && !Number.isNaN(r.studentPopulation)) {
+      edus.push(r.studentPopulation);
+    }
   }
 
   const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+  const k = edus.length;
+  const studentTotal = k ? edus.reduce((a, b) => a + b, 0) : null;
+  const rMi = fc?.radiusMiles ?? radiusMiles;
+  const regionAreaSqMi = circleAreaSqMi(rMi);
 
   return {
-    income: mean(incomes),
-    rent: mean(rents),
-    homeValue: mean(homes),
-    education: mean(edus),
+    metrics: {
+      income: mean(incomes),
+      rent: mean(rents),
+      homeValue: mean(homes),
+      studentPopulation: studentTotal,
+      studentTractCount: k > 0 ? k : null,
+      studentRegionAreaSqMi: regionAreaSqMi > 0 ? regionAreaSqMi : null,
+    },
+    factorScoresOverride: null,
   };
 }
 
@@ -110,7 +171,7 @@ function hasAnyMetric(m) {
     m.income != null ||
     m.rent != null ||
     m.homeValue != null ||
-    m.education != null
+    m.studentPopulation != null
   );
 }
 
@@ -132,67 +193,12 @@ export async function geocodeCensusCounty(lng, lat) {
   }
 }
 
-/** State + county FIPS from an 11-digit tract GEOID when geocoder is unavailable. */
-function countyFromTractGeoid(geoid) {
-  if (!geoid) return null;
-  const gid = String(geoid).replace(/\D/g, '');
-  if (gid.length < 11) return null;
-  return { state: gid.slice(0, 2), county: gid.slice(2, 5) };
-}
+// parseCountyRow removed - using offline data loader
 
-function countyFromHeatmapFc(fc) {
-  const feats = fc?.features || [];
-  for (const f of feats) {
-    const g = f.properties?.geoid;
-    const c = countyFromTractGeoid(g);
-    if (c) return c;
-  }
-  return null;
-}
-
-function parseCountyRow(headers, row) {
-  const idx = (name) => headers.indexOf(name);
-  const countyName = row[idx('NAME')] != null ? String(row[idx('NAME')]) : '';
-  const income = Number(row[idx(ACS_VARIABLES.income)]);
-  const rent = Number(row[idx(ACS_VARIABLES.rent)]);
-  const homeValue = Number(row[idx(ACS_VARIABLES.homeValue)]);
-  const eduTotal = Number(row[idx(ACS_VARIABLES.eduTotal)]) || 0;
-  const b22 = Number(row[idx(ACS_VARIABLES.eduBachelors)]) || 0;
-  const b23 = Number(row[idx(ACS_VARIABLES.eduMasters)]) || 0;
-  const b24 = Number(row[idx(ACS_VARIABLES.eduProfessional)]) || 0;
-  const b25 = Number(row[idx(ACS_VARIABLES.eduDoctorate)]) || 0;
-  const eduPct = eduTotal > 0 && isValidNum(eduTotal) ? (100 * (b22 + b23 + b24 + b25)) / eduTotal : null;
-
-  return {
-    countyName,
-    income: isValidNum(income) ? income : null,
-    rent: isValidNum(rent) ? rent : null,
-    homeValue: isValidNum(homeValue) ? homeValue : null,
-    education: eduPct,
-  };
-}
-
-/** County-level ACS (one row) — used when no tracts fall in the radius or as backup. */
+/** County-level ACS row (Supabase or CSV). */
 async function fetchCountyMetricsRow(state, county, year) {
-  const vars = [
-    'NAME',
-    ACS_VARIABLES.income,
-    ACS_VARIABLES.rent,
-    ACS_VARIABLES.homeValue,
-    ACS_VARIABLES.eduTotal,
-    ACS_VARIABLES.eduBachelors,
-    ACS_VARIABLES.eduMasters,
-    ACS_VARIABLES.eduProfessional,
-    ACS_VARIABLES.eduDoctorate,
-  ].join(',');
-
-  const url = `https://api.census.gov/data/${year}/acs/acs5?get=${vars}&for=county:${county}&in=state:${state}`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const rows = await res.json();
-  if (!Array.isArray(rows) || rows.length < 2) return null;
-  const headers = rows[0];
-  return parseCountyRow(headers, rows[1]);
+  const countyFips = `${state}${county}`;
+  return fetchCountyAcsRow(countyFips, year);
 }
 
 function linearProjectField(points, targetYear, field) {
@@ -213,31 +219,40 @@ function linearProjectField(points, targetYear, field) {
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
   let v = slope * targetYear + intercept;
-  if (field === 'education') {
-    return Math.min(100, Math.max(0, v));
+  
+  // Cap unrealistic growth for student population (county-level: typically 1k-200k)
+  if (field === 'studentPopulation') {
+    const lastY = pts[pts.length - 1].y;
+    const avgY = sumY / n;
+    const yearsAhead = targetYear - pts[pts.length - 1].x;
+    // Cap at 2x average or last value + 30% per year
+    const maxReasonable = Math.max(avgY * 2, lastY * Math.pow(1.3, yearsAhead));
+    v = Math.min(v, maxReasonable);
   }
-  return Math.max(0, Math.round(v));
+  
+  // Return null if projection is negative (invalid)
+  if (v < 0) return null;
+  return Math.round(v);
 }
 
 /**
  * Build projected metrics at horizonYear from county-level ACS time series (linear trend).
+ * NOTE: County student population (sum of all tracts) is omitted as it's not useful for site selection.
  */
 async function buildCountyProjection(state, county, horizonYear) {
-  const rows = await Promise.all(
-    ACS_HISTORY_YEARS.map(async (y) => {
-      const m = await fetchCountyMetricsRow(state, county, y);
-      if (!m || !hasAnyMetric(m)) return null;
-      return { year: parseInt(y, 10), ...m };
-    })
-  );
-  const history = rows.filter(Boolean).sort((a, b) => a.year - b.year);
+  const countyFips = `${state.padStart(2, '0')}${county.padStart(3, '0')}`;
+  const { fetchCountyAcsHistory } = await import('./offlineData');
+  const history = await fetchCountyAcsHistory(countyFips, ACS_HISTORY_YEARS);
+  
   if (history.length < 2) return null;
 
-  const fields = ['income', 'rent', 'homeValue', 'education'];
+  // Omit studentPopulation from county projections (county totals aren't meaningful for sites)
+  const fields = ['income', 'rent', 'homeValue'];
   const projected = {};
   for (const f of fields) {
     projected[f] = linearProjectField(history, horizonYear, f);
   }
+  projected.studentPopulation = null; // Explicitly null to avoid displaying county totals
 
   return {
     horizonYear,
@@ -250,27 +265,114 @@ async function buildCountyProjection(state, county, horizonYear) {
 }
 
 /**
+ * Build projected metrics by aggregating tract-level projections.
+ * Works the same as current aggregation (aggregateFromHeatmap) but with projected values.
+ * Optimized: uses batch query for Supabase.
+ */
+async function buildTractAggregateProjection(features, horizonYear, radiusMiles) {
+  if (!features || features.length === 0) return null;
+
+  const geoids = features
+    .map(f => f.properties?.geoid)
+    .filter(Boolean);
+  
+  if (geoids.length === 0) return null;
+
+  console.log(`[Projection] Computing for ${geoids.length} tracts...`);
+
+  const { isSupabaseEnabled, fetchTractHistoryBatch } = await import('./offlineData');
+  if (!isSupabaseEnabled()) {
+    console.warn('[Projection] Supabase not configured — skipping tract aggregate projection.');
+    return null;
+  }
+
+  console.log('[Projection] Supabase batch query...');
+  const tractHistories = await fetchTractHistoryBatch(geoids, ACS_HISTORY_YEARS);
+  console.log(`[Projection] Fetched ${tractHistories.size} tracts`);
+
+  const projectedMetrics = [];
+
+  for (const geoid of geoids) {
+    const yearMap = tractHistories.get(geoid);
+    if (!yearMap) continue;
+
+    const history = [];
+    for (const year of ACS_HISTORY_YEARS) {
+      const yearNum = parseInt(year, 10);
+      const data = yearMap.get(yearNum);
+      if (data) {
+        history.push({
+          year: yearNum,
+          income: data.income,
+          rent: data.rent,
+          homeValue: data.homeValue,
+          studentPopulation: data.studentPopulation,
+        });
+      }
+    }
+    history.sort((a, b) => a.year - b.year);
+    
+    if (history.length < 2) continue;
+    
+    const proj = projectFuture(history, horizonYear - Math.max(...history.map(h => h.year)));
+    if (proj.length === 0) continue;
+    
+    const projected = proj[proj.length - 1];
+    if (projected) {
+      projectedMetrics.push(projected);
+    }
+  }
+  
+  console.log(`[Projection] Generated ${projectedMetrics.length} tract projections`);
+  
+  if (projectedMetrics.length === 0) return null;
+  
+  // Aggregate projections the same way we aggregate current values (mean)
+  const incomes = projectedMetrics.filter(p => p.income != null).map(p => p.income);
+  const rents = projectedMetrics.filter(p => p.rent != null).map(p => p.rent);
+  const homes = projectedMetrics.filter(p => p.homeValue != null).map(p => p.homeValue);
+  const students = projectedMetrics.filter((p) => p.studentPopulation != null).map((p) => p.studentPopulation);
+  const kStudents = students.length;
+  const studentTotal = kStudents ? students.reduce((a, b) => a + b, 0) : null;
+  const regionAreaSqMi = circleAreaSqMi(radiusMiles);
+
+  const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+
+  const metrics = {
+    income: mean(incomes),
+    rent: mean(rents),
+    homeValue: mean(homes),
+    studentPopulation: studentTotal,
+    studentTractCount: kStudents > 0 ? kStudents : null,
+    studentRegionAreaSqMi: regionAreaSqMi > 0 ? regionAreaSqMi : null,
+  };
+  
+  const historyYears = [...ACS_HISTORY_YEARS]
+    .map((y) => parseInt(y, 10))
+    .sort((a, b) => a - b);
+
+  return {
+    horizonYear,
+    metrics,
+    factorScores: metricsToScores(metrics),
+    rawValues: metricsToRawValues(metrics),
+    source: 'tract_aggregate',
+    tractCount: projectedMetrics.length,
+    historyYears,
+  };
+}
+
+/**
  * County-level ACS history + projection for PDF / exports (geocoded point).
  */
 export async function fetchCountyTrendForReport(lng, lat) {
   const geo = await geocodeCensusCounty(lng, lat);
   if (!geo) return null;
 
-  const historyRows = await Promise.all(
-    ACS_HISTORY_YEARS.map(async (y) => {
-      const m = await fetchCountyMetricsRow(geo.state, geo.county, y);
-      if (!m || !hasAnyMetric(m)) return null;
-      return {
-        year: parseInt(y, 10),
-        countyName: m.countyName,
-        income: m.income,
-        rent: m.rent,
-        homeValue: m.homeValue,
-        education: m.education,
-      };
-    })
-  );
-  const history = historyRows.filter(Boolean).sort((a, b) => a.year - b.year);
+  const countyFips = `${geo.state}${geo.county}`;
+  const { fetchCountyAcsHistory } = await import('./offlineData');
+  const history = await fetchCountyAcsHistory(countyFips, ACS_HISTORY_YEARS);
+  
   if (history.length === 0) return null;
 
   const countyName =
@@ -301,14 +403,21 @@ export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET
   }
 
   tractCount = fc?.features?.length ?? 0;
-  let metrics = aggregateFromHeatmap(fc);
+  let agg = aggregateFromHeatmap(fc, radiusMiles);
+  let metrics = agg.metrics;
 
   if (!hasAnyMetric(metrics)) {
     const geo = await geocodeCensusCounty(lng, lat);
     if (geo) {
       const countyMetrics = await fetchCountyMetricsRow(geo.state, geo.county, year);
       if (countyMetrics && hasAnyMetric(countyMetrics)) {
-        metrics = countyMetrics;
+        metrics = {
+          ...countyMetrics,
+          studentPopulation: null,
+          studentTractCount: null,
+          studentRegionAreaSqMi: null,
+        };
+        agg = { metrics, factorScoresOverride: null };
         dataSource = 'county';
         tractCount = 0;
       }
@@ -319,15 +428,21 @@ export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET
     return neutralAreaMetrics(year);
   }
 
-  const scores = metricsToScores(metrics);
+  const scores = agg.factorScoresOverride
+    ? {
+        'Median Income': coalesceFactorScore(agg.factorScoresOverride['Median Income']),
+        'Median Rent': coalesceFactorScore(agg.factorScoresOverride['Median Rent']),
+        'Median Home Value': coalesceFactorScore(agg.factorScoresOverride['Median Home Value']),
+        School: coalesceFactorScore(agg.factorScoresOverride.School),
+      }
+    : metricsToScores(metrics);
   const rawValues = metricsToRawValues(metrics);
 
-  const geoForTrend =
-    (await geocodeCensusCounty(lng, lat)) ?? countyFromHeatmapFc(fc);
+  // Build projection by aggregating tract-level projections (same as current aggregation)
   let projection = null;
-  if (geoForTrend) {
+  if (fc?.features?.length > 0) {
     const horizonYear = parseInt(year, 10) + PROJECTION_YEARS_AHEAD;
-    projection = await buildCountyProjection(geoForTrend.state, geoForTrend.county, horizonYear);
+    projection = await buildTractAggregateProjection(fc.features, horizonYear, radiusMiles);
   }
 
   return {
@@ -342,46 +457,34 @@ export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET
   };
 }
 
+/** Tract ACS history from Supabase only. */
 export async function fetchTractHistory(geoid, years = ACS_YEARS) {
-  const state = geoid.slice(0, 2);
-  const county = geoid.slice(2, 5);
-  const tract = geoid.slice(5, 11);
+  const { fetchTractHistoryDirect } = await import('./offlineData');
+  const supabaseData = await fetchTractHistoryDirect(geoid, years);
 
-  const vars = Object.values(ACS_VARIABLES).join(',');
+  if (!supabaseData || supabaseData.size === 0) return [];
+
   const history = [];
-
   for (const year of years) {
-    try {
-      const url = `https://api.census.gov/data/${year}/acs/acs5?get=${vars},NAME&for=tract:${tract}&in=state:${state}&in=county:${county}`;
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length < 2) continue;
+    const yearNum = parseInt(year, 10);
+    const data = supabaseData.get(yearNum);
 
-      const headers = rows[0];
-      const row = rows[1];
-      const idx = (name) => headers.indexOf(name);
-
-      const income = Number(row[idx(ACS_VARIABLES.income)]);
-      const rent = Number(row[idx(ACS_VARIABLES.rent)]);
-      const homeValue = Number(row[idx(ACS_VARIABLES.homeValue)]);
-      const eduTotal = Number(row[idx(ACS_VARIABLES.eduTotal)]) || 0;
-      const eduBach =
-        (Number(row[idx(ACS_VARIABLES.eduBachelors)]) || 0) +
-        (Number(row[idx(ACS_VARIABLES.eduMasters)]) || 0) +
-        (Number(row[idx(ACS_VARIABLES.eduProfessional)]) || 0) +
-        (Number(row[idx(ACS_VARIABLES.eduDoctorate)]) || 0);
-      const eduPct = eduTotal > 0 ? (eduBach / eduTotal) * 100 : null;
+    if (data) {
+      let studentPop = data.studentPopulation;
+      if (studentPop != null && studentPop > 10000) {
+        console.warn(
+          `Tract ${geoid} year ${yearNum}: rejecting suspiciously high student population (${studentPop})`,
+        );
+        studentPop = null;
+      }
 
       history.push({
-        year: parseInt(year, 10),
-        income: isValidNum(income) ? income : null,
-        rent: isValidNum(rent) ? rent : null,
-        homeValue: isValidNum(homeValue) ? homeValue : null,
-        education: eduPct,
+        year: yearNum,
+        income: data.income,
+        rent: data.rent,
+        homeValue: data.homeValue,
+        studentPopulation: studentPop,
       });
-    } catch {
-      /* skip year */
     }
   }
 
@@ -408,13 +511,31 @@ export function projectFuture(history, yearsAhead = 3) {
     const slope = (n * sumXY - sumX * sumY) / denom;
     const intercept = (sumY - slope * sumX) / n;
 
-    return (yr) => Math.max(0, Math.round(slope * yr + intercept));
+    // Cap unrealistic growth for student population (tract-level: typically 100-5000)
+    if (field === 'studentPopulation') {
+      const lastY = points[points.length - 1].y;
+      const avgY = sumY / n;
+      return (yr) => {
+        const raw = slope * yr + intercept;
+        // Cap projection at 3x the average or last value + 50% per year, whichever is larger
+        const maxReasonable = Math.max(avgY * 3, lastY * Math.pow(1.5, yr - points[points.length - 1].x));
+        const capped = Math.min(raw, maxReasonable);
+        // Return null if projection is negative (invalid)
+        return capped < 0 ? null : Math.round(capped);
+      };
+    }
+
+    return (yr) => {
+      const v = slope * yr + intercept;
+      // Return null if projection is negative (invalid)
+      return v < 0 ? null : Math.round(v);
+    };
   };
 
   const incomeProj = project('income');
   const rentProj = project('rent');
   const homeProj = project('homeValue');
-  const eduProj = project('education');
+  const spProj = project('studentPopulation');
 
   const lastYear = Math.max(...history.map((h) => h.year));
   const projections = [];
@@ -427,17 +548,11 @@ export function projectFuture(history, yearsAhead = 3) {
       income: incomeProj ? incomeProj(y) : null,
       rent: rentProj ? rentProj(y) : null,
       homeValue: homeProj ? homeProj(y) : null,
-      education: eduProj ? Math.min(100, eduProj(y)) : null,
+      studentPopulation: spProj ? spProj(y) : null,
     });
   }
 
   return projections;
 }
 
-function isValidNum(v) {
-  if (v == null) return false;
-  const n = Number(v);
-  return !Number.isNaN(n) && n > 0 && n !== -666666666;
-}
-
-export { NATIONAL_BENCHMARKS };
+export { nationalTractZStats };

@@ -1,13 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Chart } from 'chart.js/auto';
 import { fetchTractHistory, projectFuture } from '../utils/censusApi';
-
-const METRICS = [
-  { key: 'income', label: 'Median Income', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#2563eb' },
-  { key: 'rent', label: 'Median Rent', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#16a34a' },
-  { key: 'homeValue', label: 'Home Value', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#a855f7' },
-  { key: 'education', label: 'Education (BA+)', format: (v) => (v ? `${v.toFixed(1)}%` : '—'), color: '#f59e0b' },
-];
+import { featureAreaSqMi } from '../utils/tractAreaUnits';
 
 export default function TractDetailPanel({ tract, onClose }) {
   const [loading, setLoading] = useState(false);
@@ -17,6 +11,27 @@ export default function TractDetailPanel({ tract, onClose }) {
   const [activeMetric, setActiveMetric] = useState('income');
   const chartRef = useRef(null);
   const chartInstance = useRef(null);
+
+  const tractLandSqMi = useMemo(() => (tract ? featureAreaSqMi(tract) : 0), [tract]);
+
+  const metricsConfig = useMemo(
+    () => [
+      { key: 'income', label: 'Median Income', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#2563eb' },
+      { key: 'rent', label: 'Median Rent', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#16a34a' },
+      { key: 'homeValue', label: 'Home Value', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#a855f7' },
+      {
+        key: 'studentPopulation',
+        label: 'Students per sq mi',
+        format: (v) => {
+          if (v == null || Number.isNaN(v) || tractLandSqMi <= 0) return '—';
+          const r = Number(v) / tractLandSqMi;
+          return `${r.toLocaleString('en-US', { maximumFractionDigits: 1, minimumFractionDigits: 0 })} / sq mi`;
+        },
+        color: '#f59e0b',
+      },
+    ],
+    [tractLandSqMi],
+  );
 
   useEffect(() => {
     if (!tract?.properties?.geoid) return;
@@ -61,10 +76,25 @@ export default function TractDetailPanel({ tract, onClose }) {
     }
 
     const allData = [...history, ...projections];
-    const metric = METRICS.find((m) => m.key === activeMetric);
-    const labels = allData.map((d) => d.year);
-    const values = allData.map((d) => d[activeMetric]);
-    const isProjected = allData.map((d) => d.projected);
+    const metric = metricsConfig.find((m) => m.key === activeMetric);
+
+    // Filter out entries where the active metric is null
+    const validData = allData.filter((d) => d[activeMetric] != null);
+
+    if (validData.length === 0) {
+      // No valid data for this metric, don't render chart
+      return;
+    }
+
+    const labels = validData.map((d) => d.year);
+    const values = validData.map((d) => {
+      const raw = d[activeMetric];
+      if (activeMetric === 'studentPopulation' && tractLandSqMi > 0 && raw != null) {
+        return raw / tractLandSqMi;
+      }
+      return raw;
+    });
+    const isProjected = validData.map((d) => d.projected);
 
     chartInstance.current = new Chart(chartRef.current, {
       type: 'line',
@@ -95,7 +125,17 @@ export default function TractDetailPanel({ tract, onClose }) {
             callbacks: {
               label: (ctx) => {
                 const v = ctx.parsed.y;
-                const formatted = metric?.format(v) || v;
+                if (v == null) return '';
+                // Chart stores density for students; metric.format() expects raw headcount — don't double-divide
+                let formatted;
+                if (activeMetric === 'studentPopulation') {
+                  formatted = `${Number(v).toLocaleString('en-US', {
+                    maximumFractionDigits: 1,
+                    minimumFractionDigits: 0,
+                  })} / sq mi`;
+                } else {
+                  formatted = metric?.format(v) ?? String(v);
+                }
                 const suffix = isProjected[ctx.dataIndex] ? ' (projected)' : '';
                 return `${formatted}${suffix}`;
               },
@@ -112,7 +152,8 @@ export default function TractDetailPanel({ tract, onClose }) {
             ticks: {
               font: { size: 11 },
               callback: (v) => {
-                if (activeMetric === 'education') return `${v}%`;
+                if (v == null) return '';
+                if (activeMetric === 'studentPopulation') return `${Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 })} /sq mi`;
                 if (v >= 1000000) return `$${(v / 1000000).toFixed(1)}M`;
                 if (v >= 1000) return `$${(v / 1000).toFixed(0)}K`;
                 return `$${v}`;
@@ -129,7 +170,7 @@ export default function TractDetailPanel({ tract, onClose }) {
         chartInstance.current = null;
       }
     };
-  }, [history, projections, activeMetric]);
+  }, [history, projections, activeMetric, metricsConfig, tractLandSqMi]);
 
   if (!tract) return null;
 
@@ -143,7 +184,10 @@ export default function TractDetailPanel({ tract, onClose }) {
     const first = history.find((h) => h[key] != null);
     const last = [...history].reverse().find((h) => h[key] != null);
     if (!first || !last || first === last) return null;
+    if (first[key] === 0) return null; // Avoid division by zero
     const change = ((last[key] - first[key]) / first[key]) * 100;
+    // Filter out extreme values (likely data errors)
+    if (!Number.isFinite(change) || Math.abs(change) > 10000) return null;
     return change;
   };
 
@@ -164,8 +208,8 @@ export default function TractDetailPanel({ tract, onClose }) {
 
       <div className="tract-current-metrics">
         <div className="tract-metric-grid">
-          {METRICS.map((m) => {
-            const val = m.key === 'education' ? raw.schoolProxy : raw[m.key];
+          {metricsConfig.map((m) => {
+            const val = raw[m.key];
             const trend = getTrend(m.key);
             return (
               <div
@@ -209,7 +253,7 @@ export default function TractDetailPanel({ tract, onClose }) {
         <div className="tract-projections">
           <h4>Projected Values ({latestProj.year})</h4>
           <div className="tract-projection-grid">
-            {METRICS.map((m) => (
+            {metricsConfig.map((m) => (
               <div key={m.key} className="tract-projection-item">
                 <span className="proj-label">{m.label}</span>
                 <span className="proj-value">{m.format(latestProj[m.key])}</span>

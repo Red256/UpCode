@@ -1,6 +1,6 @@
 /**
  * Tract heatmap — Census tract polygons + ACS 5-year values.
- * Primary geometry: TIGERweb MapServer spatial query on the analysis envelope (reliable for SF and all US).
+ * OFFLINE MODE: Uses local GeoJSON boundaries when available, falls back to TIGERweb.
  */
 
 import circle from '@turf/circle';
@@ -8,8 +8,40 @@ import bbox from '@turf/bbox';
 import booleanIntersects from '@turf/boolean-intersects';
 import centroid from '@turf/centroid';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
-import { ACS_DATASET_YEAR } from './censusConstants';
-const CENSUS_MISSING = -666666666;
+import distance from '@turf/distance';
+import { scoreStudentRegion } from './studentRegionScore';
+import { circleAreaSqMi } from './tractAreaUnits';
+/** Precomputed from tract boundary files: [minLng, minLat, maxLng, maxLat] per state FIPS */
+import stateTractLayerBbox from '../data/stateTractLayerBbox.json';
+
+/** Preloaded tract boundary GeoJSONs (scripts/downloadTractBoundaries.mjs). */
+const tractBoundaryGlobs = import.meta.glob('../data/tractBoundaries/*.json');
+
+/** State FIPS that have a local tractBoundaries/{st}.json (computed once). */
+const AVAILABLE_BOUNDARY_STATES = new Set(
+  Object.keys(tractBoundaryGlobs)
+    .map((k) => k.match(/(\d{2})\.json$/)?.[1])
+    .filter(Boolean),
+);
+
+const METRIC_KEYS = ['income', 'rent', 'homeValue', 'studentPopulation'];
+
+/** Precomputed per-tract scores + raw ACS (scripts/precomputeAllTractScores.mjs). */
+const tractScoreGlobs = import.meta.glob('../data/tractScores/*.json');
+
+async function loadTractScoreLookup(stateFipsSet) {
+  const merged = {};
+  for (const st of stateFipsSet) {
+    const path = `../data/tractScores/${st}.json`;
+    const loader = tractScoreGlobs[path];
+    if (loader) {
+      const mod = await loader();
+      const data = mod.default ?? mod;
+      Object.assign(merged, data);
+    }
+  }
+  return merged;
+}
 
 /**
  * ACS 2024 tracts (layer 7) and ACS 2025 tracts (layer 4) — same field set.
@@ -22,11 +54,77 @@ const TIGER_TRACT_LAYERS = [
   'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/4/query',
 ];
 
+/** Cache for loaded local boundaries. */
+const localBoundaryCache = new Map();
+
+/**
+ * Load local tract boundaries for a set of states.
+ * Returns features with geometry for tracts in the specified states.
+ */
+async function loadLocalBoundaries(stateFipsSet) {
+  const features = [];
+  
+  for (const st of stateFipsSet) {
+    if (localBoundaryCache.has(st)) {
+      features.push(...localBoundaryCache.get(st));
+      continue;
+    }
+    
+    const path = `../data/tractBoundaries/${st}.json`;
+    const loader = tractBoundaryGlobs[path];
+    
+    if (loader) {
+      try {
+        const mod = await loader();
+        const fc = mod.default ?? mod;
+        const stateFeatures = fc?.features || [];
+        localBoundaryCache.set(st, stateFeatures);
+        features.push(...stateFeatures);
+      } catch {
+        // File might not exist yet
+        localBoundaryCache.set(st, []);
+      }
+    }
+  }
+  
+  return features;
+}
+
+/**
+ * States whose tract layer bbox overlaps the query envelope (avoids loading ~50 state files).
+ * @param {[number,number,number,number]} env - [minLng, minLat, maxLng, maxLat]
+ */
+function stateFipsOverlappingEnvelope(env) {
+  const [ew, es, ee, en] = env;
+  const out = [];
+  for (const st of AVAILABLE_BOUNDARY_STATES) {
+    const bb = stateTractLayerBbox[st];
+    if (!bb) continue;
+    const [sw, ss, se, sn] = bb;
+    if (ew <= se && ee >= sw && es <= sn && en >= ss) out.push(st);
+  }
+  return out;
+}
+
+/** Axis-aligned bbox overlap [minLng, minLat, maxLng, maxLat] */
+function bboxOverlaps2d(a, b) {
+  const [aw, as, ae, an] = a;
+  const [bw, bs, be, bn] = b;
+  return aw <= be && ae >= bw && as <= bn && an >= bs;
+}
+
+/** Bbox center [lng, lat] — cheaper than centroid for distance weights. */
+function bboxCenterLngLat(f) {
+  const b = bbox(f);
+  return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+}
+
 export const HEATMAP_METRICS = [
   { key: 'Median Income', field: 'income' },
   { key: 'Median Rent', field: 'rent' },
   { key: 'Median Home Value', field: 'homeValue' },
-  { key: 'School', field: 'schoolProxy' },
+  /** Population 3+ enrolled in school (headcount) */
+  { key: 'School', field: 'studentPopulation' },
 ];
 
 export function isUsApprox(lat, lng) {
@@ -43,12 +141,6 @@ function padTract(t) {
 
 function buildGeoid(state, county, tract) {
   return `${String(state).padStart(2, '0')}${padCounty(county)}${padTract(tract)}`;
-}
-
-function isValidCensusNum(v) {
-  if (v == null || v === '') return false;
-  const n = Number(v);
-  return !Number.isNaN(n) && n !== CENSUS_MISSING && n > 0;
 }
 
 function bboxEnvelopeFromCircle(centerLat, centerLng, radiusMiles, pad = 1.05) {
@@ -100,7 +192,8 @@ async function fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, 
 
 function normalizeGeoidFromFeature(f) {
   const p = f.properties || {};
-  let geoid = p.GEOID || p.GEO_ID;
+  /** Local boundary files (downloadTractBoundaries.mjs) only store lowercase `geoid`. */
+  let geoid = p.GEOID || p.GEO_ID || p.geoid;
   if (geoid != null) {
     geoid = String(geoid).replace(/^1400000US/i, '').replace(/^.*US/i, '');
     geoid = String(geoid).replace(/\D/g, '');
@@ -123,24 +216,60 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
   }
 
   const analysisCircle = circle([centerLng, centerLat], radiusMiles, { units: 'miles', steps: 96 });
+  const circleBbox = bbox(analysisCircle);
   const { xmin, ymin, xmax, ymax } = bboxEnvelopeFromCircle(centerLat, centerLng, radiusMiles, 1.08);
+  const queryEnv = [xmin, ymin, xmax, ymax];
 
   let features = [];
-  for (const layerUrl of TIGER_TRACT_LAYERS) {
-    try {
-      features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
-      if (features.length) break;
-    } catch {
-      /* try next layer */
+
+  // Load only state files whose tract layer intersects the query envelope (not all ~51 states).
+  const statesToLoad = stateFipsOverlappingEnvelope(queryEnv);
+  const localFeatures = statesToLoad.length ? await loadLocalBoundaries(statesToLoad) : [];
+
+  if (localFeatures.length > 0) {
+    features = localFeatures.filter((f) => {
+      if (!f.geometry) return false;
+      try {
+        const fb = bbox(f);
+        const fbb = [fb[0], fb[1], fb[2], fb[3]];
+        return bboxOverlaps2d(queryEnv, fbb);
+      } catch {
+        return false;
+      }
+    });
+  }
+  
+  // If no local features, try TIGERweb API (online fallback)
+  if (!features.length) {
+    for (const layerUrl of TIGER_TRACT_LAYERS) {
+      try {
+        features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
+        if (features.length) break;
+      } catch {
+        /* try next layer */
+      }
     }
   }
 
   if (!features.length) {
-    return { type: 'FeatureCollection', features: [] };
+    return { type: 'FeatureCollection', features: [], radiusMiles: Number(radiusMiles) || 0 };
   }
 
   const intersectsCircle = (f) => {
     if (!f.geometry) return false;
+    try {
+      const fb = bbox(f);
+      if (
+        fb[0] > circleBbox[2] ||
+        fb[2] < circleBbox[0] ||
+        fb[1] > circleBbox[3] ||
+        fb[3] < circleBbox[1]
+      ) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
     try {
       if (booleanIntersects(f, analysisCircle)) return true;
     } catch {
@@ -159,127 +288,142 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     filtered = [...features];
   }
 
-  const byCounty = new Map();
+  const stateSet = new Set();
   for (const f of filtered) {
     normalizeGeoidFromFeature(f);
-    const p = f.properties || {};
-    const st = p.STATE;
-    const co = p.COUNTY;
-    if (st == null || co == null) continue;
-    const ckey = `${String(st).padStart(2, '0')}_${padCounty(co)}`;
-    if (!byCounty.has(ckey)) byCounty.set(ckey, []);
-    byCounty.get(ckey).push(f);
+    const gid = f.properties?.geoid;
+    const st =
+      f.properties?.STATE ??
+      (gid && String(gid).length >= 2 ? String(gid).slice(0, 2) : null);
+    if (st != null) stateSet.add(String(st).padStart(2, '0'));
   }
 
-  const acsVars = [
-    'NAME',
-    'B19013_001E',
-    'B25064_001E',
-    'B25077_001E',
-    'B15003_001E',
-    'B15003_022E',
-    'B15003_023E',
-    'B15003_024E',
-    'B15003_025E',
-  ].join(',');
+  const lookup = await loadTractScoreLookup(stateSet);
 
-  const acsByGeoid = new Map();
-
-  for (const [key] of byCounty) {
-    const [state, county] = key.split('_');
-    const url = `https://api.census.gov/data/${ACS_DATASET_YEAR}/acs/acs5?get=${acsVars}&for=tract:*&in=state:${state}&in=county:${county}`;
-    try {
-      const acsRes = await fetch(url);
-      if (!acsRes.ok) continue;
-      const rows = await acsRes.json();
-      if (!Array.isArray(rows) || rows.length < 2) continue;
-
-      const headers = rows[0];
-      const idx = (name) => headers.indexOf(name);
-
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        const tract = row[idx('tract')];
-        if (tract == null) continue;
-        const geoid = buildGeoid(state, county, tract);
-        acsByGeoid.set(geoid, { headers, row });
-      }
-    } catch {
-      /* skip county */
-    }
-  }
-
-  const incomeRaw = [];
-  const rentRaw = [];
-  const homeRaw = [];
-  const schoolRaw = [];
+  const emptyRaw = () => ({
+    income: null,
+    rent: null,
+    homeValue: null,
+    studentPopulation: null,
+    studentsEnrolled: null,
+    population: null,
+    name: null,
+  });
+  const emptyScores = () => ({
+    income: null,
+    rent: null,
+    homeValue: null,
+    studentPopulation: null,
+  });
 
   for (const f of filtered) {
     const gid = f.properties.geoid;
-    const pack = gid ? acsByGeoid.get(gid) : null;
-
-    if (pack) {
-      const { headers, row } = pack;
-      const idx = (name) => headers.indexOf(name);
-
-      const income = row[idx('B19013_001E')];
-      const rent = row[idx('B25064_001E')];
-      const home = row[idx('B25077_001E')];
-      const tot = row[idx('B15003_001E')];
-      const b22 = Number(row[idx('B15003_022E')]) || 0;
-      const b23 = Number(row[idx('B15003_023E')]) || 0;
-      const b24 = Number(row[idx('B15003_024E')]) || 0;
-      const b25 = Number(row[idx('B15003_025E')]) || 0;
-      const totN = Number(tot);
-      const schoolPct = isValidCensusNum(tot) && totN > 0 ? (100 * (b22 + b23 + b24 + b25)) / totN : null;
-
+    const entry = gid && lookup[gid] ? lookup[gid] : null;
+    if (entry?.raw && entry?.scores) {
       f.properties.raw = {
-        income: isValidCensusNum(income) ? Number(income) : null,
-        rent: isValidCensusNum(rent) ? Number(rent) : null,
-        homeValue: isValidCensusNum(home) ? Number(home) : null,
-        schoolProxy: schoolPct,
-        name: row[idx('NAME')] || f.properties.NAME,
+        ...entry.raw,
+        name: entry.raw.name || f.properties.NAME,
       };
+      f.properties.scores = { ...entry.scores };
     } else {
-      f.properties.raw = {
-        income: null,
-        rent: null,
-        homeValue: null,
-        schoolProxy: null,
-        name: f.properties.NAME,
-      };
+      f.properties.raw = { ...emptyRaw(), name: f.properties.NAME };
+      f.properties.scores = emptyScores();
     }
-
-    const r = f.properties.raw;
-    if (r.income != null) incomeRaw.push(r.income);
-    if (r.rent != null) rentRaw.push(r.rent);
-    if (r.homeValue != null) homeRaw.push(r.homeValue);
-    if (r.schoolProxy != null) schoolRaw.push(r.schoolProxy);
   }
 
-  const mm = (arr) => (arr.length ? { min: Math.min(...arr), max: Math.max(...arr) } : { min: 0, max: 1 });
-  const mIncome = mm(incomeRaw);
-  const mRent = mm(rentRaw);
-  const mHome = mm(homeRaw);
-  const mSchool = mm(schoolRaw);
-
-  const toScore = (v, min, max) => {
-    if (v == null || Number.isNaN(v)) return null;
-    if (max === min) return 50;
-    return (100 * (v - min)) / (max - min);
-  };
+  const R = Math.max(Number(radiusMiles) || 0, 1e-6);
 
   for (const f of filtered) {
-    const r = f.properties.raw;
-    f.properties.scores = {
-      income: toScore(r.income, mIncome.min, mIncome.max),
-      rent: toScore(r.rent, mRent.min, mRent.max),
-      homeValue: toScore(r.homeValue, mHome.min, mHome.max),
-      schoolProxy: toScore(r.schoolProxy, mSchool.min, mSchool.max),
-    };
+    let dMi = null;
+    let w = 0;
+    try {
+      const [lng, lat] = bboxCenterLngLat(f);
+      dMi = distance([lng, lat], [centerLng, centerLat], { units: 'miles' });
+      w = Math.max(0, 1 - dMi / R);
+    } catch {
+      dMi = null;
+      w = 0;
+    }
+    f.properties.distanceMi = dMi;
+    f.properties.distanceWeight = w;
   }
 
-  return { type: 'FeatureCollection', features: filtered };
+  const weightedScore = (metricKey) => {
+    let num = 0;
+    let den = 0;
+    for (const f of filtered) {
+      const w = f.properties.distanceWeight;
+      if (w == null || w <= 0) continue;
+      const sc = f.properties.scores?.[metricKey];
+      if (sc == null || Number.isNaN(sc)) continue;
+      num += w * sc;
+      den += w;
+    }
+    return den > 0 ? num / den : null;
+  };
+
+  const weightedRawMean = (metricKey) => {
+    let num = 0;
+    let den = 0;
+    for (const f of filtered) {
+      const w = f.properties.distanceWeight;
+      if (w == null || w <= 0) continue;
+      const v = f.properties.raw?.[metricKey];
+      if (v == null || Number.isNaN(v)) continue;
+      num += w * v;
+      den += w;
+    }
+    return den > 0 ? num / den : null;
+  };
+
+  let studentRegionTotal = 0;
+  let studentRegionTractCount = 0;
+  for (const f of filtered) {
+    const v = f.properties.raw?.studentPopulation;
+    if (v == null || Number.isNaN(v)) continue;
+    studentRegionTotal += v;
+    studentRegionTractCount += 1;
+  }
+  const studentRegionDisplay =
+    studentRegionTractCount > 0 ? studentRegionTotal : null;
+
+  const regionLandAreaSqMi = circleAreaSqMi(R);
+
+  const areaScoreSummary = {
+    factorScores: {
+      'Median Income': weightedScore('income'),
+      'Median Rent': weightedScore('rent'),
+      'Median Home Value': weightedScore('homeValue'),
+      School:
+        studentRegionTractCount > 0 && regionLandAreaSqMi > 0
+          ? scoreStudentRegion(studentRegionTotal, regionLandAreaSqMi)
+          : null,
+    },
+    metricMeans: {
+      income: weightedRawMean('income'),
+      rent: weightedRawMean('rent'),
+      homeValue: weightedRawMean('homeValue'),
+      studentPopulation: studentRegionDisplay,
+      studentTractCount: studentRegionTractCount > 0 ? studentRegionTractCount : null,
+      studentRegionAreaSqMi: regionLandAreaSqMi > 0 ? regionLandAreaSqMi : null,
+    },
+  };
+
+  for (const k of Object.keys(areaScoreSummary.factorScores)) {
+    const v = areaScoreSummary.factorScores[k];
+    if (v == null || Number.isNaN(v)) {
+      areaScoreSummary.factorScores[k] = null;
+    } else {
+      areaScoreSummary.factorScores[k] = Math.round(v);
+    }
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features: filtered,
+    radiusMiles: Number(radiusMiles) || 0,
+    areaScoreSummary,
+  };
 }
 
 /**

@@ -1,6 +1,7 @@
 import { useMemo, useCallback, useRef, useEffect } from "react";
 import { GeoJSON } from "react-leaflet";
 import { colorForHeatmapScore } from "../utils/tractHeatmap";
+import { featureAreaSqMi } from "../utils/tractAreaUnits";
 
 export default function TractHeatmapLayer({ data, metricField, onTractClick }) {
   const onTractClickRef = useRef(onTractClick);
@@ -23,19 +24,25 @@ export default function TractHeatmapLayer({ data, metricField, onTractClick }) {
 
   const onEachFeature = useCallback((feature, layer) => {
     const r = feature.properties.raw || {};
-    const name = r.name || feature.properties.NAME || "—";
+    const name = r.name || feature.properties.NAME || feature.properties.name || "—";
     const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("en-US"));
     const fmtMoney = (n) => (n == null ? "—" : `$${fmt(n)}`);
-    const edu =
-      r.schoolProxy != null && !Number.isNaN(r.schoolProxy)
-        ? `${r.schoolProxy.toFixed(1)}%`
+    const sqMi = featureAreaSqMi(feature);
+    const stud =
+      r.studentPopulation != null &&
+      !Number.isNaN(r.studentPopulation) &&
+      sqMi > 0
+        ? `${(r.studentPopulation / sqMi).toLocaleString("en-US", {
+            maximumFractionDigits: 1,
+            minimumFractionDigits: 0,
+          })} students/sq mi`
         : "—";
     const html = `<div style="font-size:12px;min-width:200px;font-family:system-ui,sans-serif">
 <div style="font-weight:600;margin-bottom:6px">${name}</div>
 <div>Median income: ${fmtMoney(r.income)}</div>
 <div>Median gross rent: ${fmtMoney(r.rent)}</div>
 <div>Median home value: ${fmtMoney(r.homeValue)}</div>
-<div>25+ with bachelor's or higher: ${edu}</div>
+<div>Students per sq mi (ACS): ${stud}</div>
 <div style="margin-top:8px;font-size:11px;color:#6b7280">Click for trends &amp; projections</div>
 </div>`;
     layer.bindPopup(html);

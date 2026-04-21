@@ -22,8 +22,9 @@ export async function captureMapToDataUrl(center, zoom) {
 
   window.dispatchEvent(new Event('resize'));
   document.dispatchEvent(new Event(BEFORE_MAP_CAPTURE));
-  await new Promise((r) => setTimeout(r, 120));
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 
   try {
     const canvas = await html2canvas(el, {
@@ -50,7 +51,17 @@ export async function captureMapToDataUrl(center, zoom) {
   return tryStaticMapFallback(center, zoom);
 }
 
+/**
+ * Fallback to static map (requires internet).
+ * In offline mode, this will gracefully return null.
+ */
 async function tryStaticMapFallback(center, zoom) {
+  // Skip static map in offline mode
+  if (!navigator.onLine) {
+    console.info('Offline: skipping static map fallback');
+    return null;
+  }
+  
   const lat = Number(center[0]);
   const lon = Number(center[1]);
   if (Number.isNaN(lat) || Number.isNaN(lon)) return null;

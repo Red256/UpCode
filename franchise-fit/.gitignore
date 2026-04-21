@@ -1,5 +1,12 @@
-# Logs
+# Logs — never commit real keys (use .env.example only)
 .env
+.env.local
+.env.*.local
+.env.development.local
+.env.production.local
+# allow example templates
+!.env.example
+!.env*.example
 logs
 *.log
 npm-debug.log*

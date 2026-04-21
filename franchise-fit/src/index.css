@@ -40,6 +40,27 @@ body {
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  position: relative;
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: 
+    radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    radial-gradient(circle at 80% 80%, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 60px 60px, 90px 90px;
+  background-position: 0 0, 40px 40px;
+  animation: floatingDots 60s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes floatingDots {
+  from { transform: translateY(0); }
+  to { transform: translateY(-60px); }
 }
 
 .app {
@@ -47,6 +68,68 @@ body {
   height: 100vh;
   gap: 14px;
   padding: 14px;
+  position: relative;
+}
+
+/* Soft aurora when overall score ≥ 85 (static — no looping animation) */
+.app--elite-score::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.85;
+  background:
+    radial-gradient(ellipse 90% 55% at 50% -10%, rgba(250, 204, 21, 0.14), transparent 55%),
+    radial-gradient(ellipse 70% 45% at 100% 80%, rgba(34, 197, 94, 0.1), transparent 50%),
+    radial-gradient(ellipse 50% 40% at 0% 60%, rgba(59, 130, 246, 0.08), transparent 45%);
+}
+
+/* Map under confetti; panel above confetti (scores stay readable) */
+.app .map-container {
+  position: relative;
+  z-index: 10;
+}
+
+.app .panel {
+  position: relative;
+  z-index: 20;
+}
+
+/* Confetti between map (10) and panel (20); below tract detail (2000) */
+.celebration-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+
+.map-container--elite {
+  outline: 2px solid rgba(34, 197, 94, 0.45);
+  box-shadow:
+    var(--shadow-lg),
+    0 0 0 1px rgba(250, 204, 21, 0.22),
+    0 0 56px rgba(34, 197, 94, 0.16);
+}
+
+.panel--elite {
+  box-shadow:
+    0 18px 60px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(34, 197, 94, 0.28),
+    0 0 90px rgba(250, 204, 21, 0.1);
+}
+
+.score-card--elite {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(34, 197, 94, 0.35);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.88),
+    rgba(240, 253, 244, 0.65),
+    rgba(255, 251, 235, 0.55)
+  );
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.12);
 }
 
 /* ============= MAP ============= */
@@ -218,11 +301,14 @@ body {
   padding: 16px;
   margin-bottom: 10px;
   border: 1px solid var(--border);
-  transition: background 0.2s, box-shadow 0.2s;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  position: relative;
 }
 
 .card:hover {
   background: var(--card-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.06);
 }
 
 .card h3 {
@@ -252,7 +338,12 @@ body {
   color: #16a34a;
   font-size: 12px;
   font-weight: 600;
-  animation: fadeIn 0.3s ease-out;
+  animation: fadeIn 0.3s ease-out, locationPulse 2s ease-in-out 1;
+}
+
+@keyframes locationPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
 }
 
 /* ============= CONTROLS ============= */
@@ -277,7 +368,7 @@ select {
   outline: none;
   background: rgba(255, 255, 255, 0.85);
   width: 100%;
-  transition: all 0.2s;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 input:focus,
@@ -285,6 +376,7 @@ select:focus {
   box-shadow: 0 0 0 4px var(--ring);
   border-color: rgba(37, 99, 235, 0.35);
   background: white;
+  transform: translateY(-1px);
 }
 
 input::placeholder {
@@ -345,6 +437,7 @@ input::placeholder {
 .autocomplete-item:hover,
 .autocomplete-item.active {
   background: rgba(37, 99, 235, 0.06);
+  transform: translateX(4px);
 }
 
 .autocomplete-item .ac-icon {
@@ -358,6 +451,11 @@ input::placeholder {
   flex-shrink: 0;
   color: var(--primary);
   font-size: 13px;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.autocomplete-item:hover .ac-icon {
+  transform: scale(1.1) rotate(5deg);
 }
 
 .autocomplete-item .ac-text {
@@ -402,11 +500,33 @@ button {
   background: linear-gradient(135deg, var(--primary) 0%, #1d4ed8 55%, #0ea5e9 120%);
   color: white;
   box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
-  transition: all 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  position: relative;
+  overflow: hidden;
+  background-size: 200% auto;
+  animation: gradientShift 4s ease infinite;
+}
+
+@keyframes gradientShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+button::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent 40%, rgba(255, 255, 255, 0.2) 50%, transparent 60%);
+  transform: translateX(-100%);
+  transition: transform 0.6s;
+}
+
+button:hover::before {
+  transform: translateX(100%);
 }
 
 button.secondary {
@@ -422,12 +542,12 @@ button.secondary:hover {
 }
 
 button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 28px rgba(37, 99, 235, 0.45);
 }
 
 button:active {
-  transform: translateY(0px);
+  transform: translateY(0px) scale(0.98);
 }
 
 button:disabled {
@@ -555,6 +675,7 @@ button:disabled {
 .score-ring-svg {
   width: 80px;
   height: 80px;
+  display: block;
   transform: rotate(-90deg);
 }
 
@@ -568,7 +689,7 @@ button:disabled {
   fill: none;
   stroke-width: 8;
   stroke-linecap: round;
-  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.4s;
+  transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.4s;
 }
 
 .score-ring-value {
@@ -579,7 +700,9 @@ button:disabled {
   justify-content: center;
   font-size: 24px;
   font-weight: 900;
-  letter-spacing: -1px;
+  letter-spacing: -0.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   transition: color 0.3s;
 }
 
@@ -618,14 +741,36 @@ button:disabled {
   font-size: 11px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.65);
-  transition: all 0.3s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   width: fit-content;
+  animation: badgeFadeIn 0.5s ease-out;
+}
+
+@keyframes badgeFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .badge.ok {
   color: var(--ok);
   border-color: rgba(22, 163, 74, 0.2);
   background: rgba(22, 163, 74, 0.08);
+  animation: badgeFadeIn 0.5s ease-out, badgeGlowOk 2s ease-in-out infinite;
+}
+
+@keyframes badgeGlowOk {
+  0%, 100% {
+    box-shadow: 0 0 0 rgba(22, 163, 74, 0);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(22, 163, 74, 0.3);
+  }
 }
 .badge.warn {
   color: var(--warn);
@@ -654,7 +799,31 @@ button:disabled {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.5);
   border: 1px solid rgba(0, 0, 0, 0.03);
-  transition: all 0.25s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: factorSlideIn 0.4s ease-out backwards;
+}
+
+.factor-row:nth-child(1) { animation-delay: 0.05s; }
+.factor-row:nth-child(2) { animation-delay: 0.1s; }
+.factor-row:nth-child(3) { animation-delay: 0.15s; }
+.factor-row:nth-child(4) { animation-delay: 0.2s; }
+.factor-row:nth-child(5) { animation-delay: 0.25s; }
+
+@keyframes factorSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.factor-row:hover {
+  background: rgba(255, 255, 255, 0.75);
+  transform: translateX(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
 .factor-row:hover:not(.disabled) {
@@ -738,16 +907,17 @@ button:disabled {
   bottom: 3px;
   background: white;
   border-radius: 50%;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .toggle input:checked + .toggle-slider {
   background: linear-gradient(135deg, #2563eb, #0ea5e9);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 }
 
 .toggle input:checked + .toggle-slider::before {
-  transform: translateX(16px);
+  transform: translateX(16px) scale(1.1);
 }
 
 /* Slider input */
@@ -782,14 +952,19 @@ button:disabled {
   border-radius: 50%;
   background: white;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15), 0 0 0 2px var(--slider-color, #2563eb);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15), 0 0 0 3px var(--slider-color, #2563eb);
   border: none;
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
 }
 
 .factor-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 0 0 2px var(--slider-color, #2563eb);
+  transform: scale(1.3);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2), 0 0 0 4px var(--slider-color, #2563eb);
+}
+
+.factor-slider::-webkit-slider-thumb:active {
+  transform: scale(1.15);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15), 0 0 0 5px var(--slider-color, #2563eb);
 }
 
 .factor-slider::-moz-range-thumb {
@@ -964,10 +1139,11 @@ button:disabled {
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border: 2.5px solid rgba(255, 255, 255, 0.25);
   border-top-color: white;
+  border-right-color: rgba(255, 255, 255, 0.7);
   border-radius: 50%;
-  animation: spin 0.6s linear infinite;
+  animation: spin 0.7s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
 }
 
 @keyframes spin {
@@ -990,6 +1166,25 @@ button:disabled {
   align-items: center;
   padding: 4px 0;
   font-size: 12px;
+  animation: breakdownFadeIn 0.4s ease-out backwards;
+}
+
+.breakdown-row:nth-child(1) { animation-delay: 0.05s; }
+.breakdown-row:nth-child(2) { animation-delay: 0.1s; }
+.breakdown-row:nth-child(3) { animation-delay: 0.15s; }
+.breakdown-row:nth-child(4) { animation-delay: 0.2s; }
+.breakdown-row:nth-child(5) { animation-delay: 0.25s; }
+.breakdown-row:nth-child(6) { animation-delay: 0.3s; }
+
+@keyframes breakdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .breakdown-label {

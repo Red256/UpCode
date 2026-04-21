@@ -1,0 +1,35 @@
+{
+  "acsYear": "2024",
+  "description": "Per metric: national median and robust scale sigma = MAD × 1.4826 over census tracts with valid values. Z-scores use (value − median) / sigma. studentPerSqMi uses per-tract students per land sq mi; regional School uses R = total students / sum tract land areas, z = (R − median) / sigma.",
+  "income": {
+    "median": 77449,
+    "sigma": 33291.783,
+    "n": 82913
+  },
+  "rent": {
+    "median": 1337,
+    "sigma": 600.453,
+    "n": 79285
+  },
+  "homeValue": {
+    "median": 308500,
+    "sigma": 205191.84,
+    "n": 81256
+  },
+  "studentPopulation": {
+    "median": 834,
+    "sigma": 484.81,
+    "n": 84401
+  },
+  "_meta": {
+    "stateWideRequestsOk": 51,
+    "countyFallbackChunks": 0,
+    "generatedAt": "2026-04-19T20:49:06.406Z"
+  },
+  "studentPerSqMi": {
+    "median": 472.362,
+    "sigma": 667.958,
+    "n": 84401,
+    "unit": "students_per_sq_mi"
+  }
+}

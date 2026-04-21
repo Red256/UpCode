@@ -47,8 +47,13 @@ export default function ScoreCard({ factors, analysisResult }) {
   const projColor = proj ? getScoreColor(proj.overall) : null;
   const acsYear = analysisResult.acsDatasetYear ?? "";
 
+  const elite = avg >= 85;
+
   return (
-    <div className="card score-card" style={{ animation: "fadeIn 0.4s ease-out" }}>
+    <div
+      className={`card score-card${elite ? " score-card--elite" : ""}`}
+      style={{ animation: "fadeIn 0.4s ease-out" }}
+    >
       <div className={`score-card-inner ${proj ? "score-card-inner-dual" : ""}`}>
         <div className="score-pillar">
           <div className="score-pillar-label">

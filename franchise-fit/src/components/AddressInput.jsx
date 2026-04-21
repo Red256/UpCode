@@ -49,7 +49,7 @@ export default function AddressInput({ value, onChange, onSelect }) {
   return (
     <div className="location-input-wrap" ref={wrapRef}>
       <input
-        placeholder="Enter city or address (e.g. Austin, TX)"
+        placeholder="Search city or street address"
         value={value}
         onChange={(e) => {
           onChange(e.target.value);

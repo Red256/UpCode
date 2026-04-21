@@ -51,11 +51,15 @@ export default function MapView({
   heatmapError = null,
   onHeatmapMetricChange,
   onTractClick,
+  eliteScore = false,
 }) {
   const meters = milesToMeters(radiusMi);
 
   return (
-    <div id={MAP_CAPTURE_ROOT_ID} className="map-container">
+    <div
+      id={MAP_CAPTURE_ROOT_ID}
+      className={`map-container${eliteScore ? " map-container--elite" : ""}`}
+    >
       <MapContainer
         center={center}
         zoom={zoom}
@@ -111,7 +115,7 @@ export default function MapView({
               >
                 {HEATMAP_METRICS.map((m) => (
                   <option key={m.key} value={m.key}>
-                    {m.key === "School" ? "School (education proxy)" : m.key}
+                    {m.key === "School" ? "School (students / sq mi in area)" : m.key}
                   </option>
                 ))}
               </select>
