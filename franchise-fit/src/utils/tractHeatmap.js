@@ -9,8 +9,8 @@ import booleanIntersects from '@turf/boolean-intersects';
 import centroid from '@turf/centroid';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import distance from '@turf/distance';
-import { scoreStudentRegion } from './studentRegionScore';
-import { circleAreaSqMi } from './tractAreaUnits';
+import { scoreStudentRegion, scoreSchoolDensityHeadcount, scoreSchoolEnrollmentFallback } from './studentRegionScore';
+import { circleAreaSqMi, featureAreaSqMi } from './tractAreaUnits';
 /** Precomputed from tract boundary files: [minLng, minLat, maxLng, maxLat] per state FIPS */
 import stateTractLayerBbox from '../data/stateTractLayerBbox.json';
 
@@ -210,15 +210,42 @@ function normalizeGeoidFromFeature(f) {
   if (geoid && geoid.length >= 11) f.properties.geoid = geoid;
 }
 
-export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles) {
+export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles, polygonLatLng = null) {
   if (!isUsApprox(centerLat, centerLng)) {
     throw new Error('Tract heatmap is only available for locations in the United States.');
   }
 
-  const analysisCircle = circle([centerLng, centerLat], radiusMiles, { units: 'miles', steps: 96 });
-  const circleBbox = bbox(analysisCircle);
-  const { xmin, ymin, xmax, ymax } = bboxEnvelopeFromCircle(centerLat, centerLng, radiusMiles, 1.08);
-  const queryEnv = [xmin, ymin, xmax, ymax];
+  // If polygon provided, use it; otherwise use circle
+  let analysisShape;
+  let shapeBbox;
+  let queryEnv;
+  
+  if (polygonLatLng && polygonLatLng.length >= 3) {
+    // Convert polygon from [lat,lng] to GeoJSON [lng,lat]
+    const geoJsonCoords = polygonLatLng.map(([lat, lng]) => [lng, lat]);
+    geoJsonCoords.push(geoJsonCoords[0]); // close the ring
+    analysisShape = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [geoJsonCoords]
+      },
+      properties: {}
+    };
+    shapeBbox = bbox(analysisShape);
+    const pad = 0.02; // small padding for envelope
+    queryEnv = [
+      shapeBbox[0] - pad,
+      shapeBbox[1] - pad,
+      shapeBbox[2] + pad,
+      shapeBbox[3] + pad
+    ];
+  } else {
+    analysisShape = circle([centerLng, centerLat], radiusMiles, { units: 'miles', steps: 96 });
+    shapeBbox = bbox(analysisShape);
+    const { xmin, ymin, xmax, ymax } = bboxEnvelopeFromCircle(centerLat, centerLng, radiusMiles, 1.08);
+    queryEnv = [xmin, ymin, xmax, ymax];
+  }
 
   let features = [];
 
@@ -241,6 +268,7 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
   
   // If no local features, try TIGERweb API (online fallback)
   if (!features.length) {
+    const [xmin, ymin, xmax, ymax] = queryEnv;
     for (const layerUrl of TIGER_TRACT_LAYERS) {
       try {
         features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
@@ -255,15 +283,15 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     return { type: 'FeatureCollection', features: [], radiusMiles: Number(radiusMiles) || 0 };
   }
 
-  const intersectsCircle = (f) => {
+  const intersectsShape = (f) => {
     if (!f.geometry) return false;
     try {
       const fb = bbox(f);
       if (
-        fb[0] > circleBbox[2] ||
-        fb[2] < circleBbox[0] ||
-        fb[1] > circleBbox[3] ||
-        fb[3] < circleBbox[1]
+        fb[0] > shapeBbox[2] ||
+        fb[2] < shapeBbox[0] ||
+        fb[1] > shapeBbox[3] ||
+        fb[3] < shapeBbox[1]
       ) {
         return false;
       }
@@ -271,19 +299,19 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
       return false;
     }
     try {
-      if (booleanIntersects(f, analysisCircle)) return true;
+      if (booleanIntersects(f, analysisShape)) return true;
     } catch {
       /* invalid rings */
     }
     try {
       const c = centroid(f);
-      return booleanPointInPolygon(c, analysisCircle);
+      return booleanPointInPolygon(c, analysisShape);
     } catch {
       return false;
     }
   };
 
-  let filtered = features.filter(intersectsCircle);
+  let filtered = features.filter(intersectsShape);
   if (!filtered.length && features.length) {
     filtered = [...features];
   }
@@ -325,10 +353,25 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
         name: entry.raw.name || f.properties.NAME,
       };
       f.properties.scores = { ...entry.scores };
+      if (entry.centroid?.lat != null && entry.centroid?.lng != null) {
+        f.properties.centroid = { lat: entry.centroid.lat, lng: entry.centroid.lng };
+      }
     } else {
       f.properties.raw = { ...emptyRaw(), name: f.properties.NAME };
       f.properties.scores = emptyScores();
     }
+  }
+
+  /** School map score must use the same land sq mi as popups (`featureAreaSqMi`), not precompute AREA_MAP only. */
+  for (const f of filtered) {
+    const raw = f.properties.raw;
+    const hc = raw?.studentPopulation;
+    const landSqMi = featureAreaSqMi(f);
+    const densScore = scoreSchoolDensityHeadcount(hc, landSqMi);
+    const sch =
+      densScore != null ? densScore : scoreSchoolEnrollmentFallback(hc);
+    if (!f.properties.scores) f.properties.scores = emptyScores();
+    f.properties.scores.studentPopulation = sch != null ? sch : null;
   }
 
   const R = Math.max(Number(radiusMiles) || 0, 1e-6);

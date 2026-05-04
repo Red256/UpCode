@@ -1,0 +1,104 @@
+/**
+ * US address geocoding: Nominatim (OSM) with fallbacks, then US Census one-line geocoder.
+ * Nominatim usage: https://operations.osmfoundation.org/policies/nominatim/
+ */
+
+const NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";
+
+async function nominatimSearch(extraParams) {
+  const u = new URL(NOMINATIM_SEARCH);
+  u.searchParams.set("format", "json");
+  u.searchParams.set("limit", "8");
+  u.searchParams.set("addressdetails", "1");
+  u.searchParams.set("countrycodes", "us");
+  for (const [k, v] of Object.entries(extraParams)) {
+    if (v != null && String(v).trim() !== "") u.searchParams.set(k, String(v));
+  }
+  const res = await fetch(u.toString(), {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) return [];
+  try {
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
+function pickNominatimFirst(data) {
+  if (!data?.length) return null;
+  const row = data[0];
+  return {
+    lat: parseFloat(row.lat),
+    lng: parseFloat(row.lon),
+    displayName: row.display_name,
+  };
+}
+
+/**
+ * Census Geocoder — strong on US street addresses; works when OSM has gaps.
+ * @see https://geocoding.geo.census.gov/geocoder/Geocoding_Services_API.html
+ */
+async function geocodeCensusOneLine(address) {
+  try {
+    const url =
+      "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=" +
+      encodeURIComponent(address) +
+      "&benchmark=Public_AR_Current&format=json";
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const matches = json.result?.addressMatches;
+    if (!matches?.length) return null;
+    const m = matches[0];
+    const lat = m.coordinates?.y;
+    const lng = m.coordinates?.x;
+    if (lat == null || lng == null) return null;
+    return {
+      lat: Number(lat),
+      lng: Number(lng),
+      displayName: m.matchedAddress || address,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} address
+ * @returns {Promise<{ lat: number, lng: number, displayName: string } | null>}
+ */
+export async function geocodeUsAddressFreeform(address) {
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+
+  const attempts = [];
+  attempts.push(trimmed);
+  const withoutLeadingNumber = trimmed.replace(/^\d+\s*,\s*/u, "").trim();
+  if (withoutLeadingNumber && withoutLeadingNumber !== trimmed) attempts.push(withoutLeadingNumber);
+
+  const seen = new Set();
+  for (const q of attempts) {
+    if (!q || seen.has(q)) continue;
+    seen.add(q);
+    const data = await nominatimSearch({ q });
+    const hit = pickNominatimFirst(data);
+    if (hit && Number.isFinite(hit.lat) && Number.isFinite(hit.lng)) return hit;
+  }
+
+  const zipMatch = trimmed.match(/\b(\d{5})(?:-\d{4})?\b/);
+  if (zipMatch) {
+    const data = await nominatimSearch({ postalcode: zipMatch[1] });
+    const hit = pickNominatimFirst(data);
+    if (hit && Number.isFinite(hit.lat) && Number.isFinite(hit.lng)) return hit;
+  }
+
+  const census = await geocodeCensusOneLine(trimmed);
+  if (census) return census;
+
+  if (withoutLeadingNumber && withoutLeadingNumber !== trimmed) {
+    return geocodeCensusOneLine(withoutLeadingNumber);
+  }
+
+  return null;
+}

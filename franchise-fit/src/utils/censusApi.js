@@ -77,6 +77,7 @@ function neutralAreaMetrics(year) {
     tracts: [],
     projection: null,
     dataSource: 'none',
+    tractGeoJson: { type: 'FeatureCollection', features: [] },
   };
 }
 
@@ -391,13 +392,13 @@ export async function fetchCountyTrendForReport(lng, lat) {
   };
 }
 
-export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET_YEAR) {
+export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET_YEAR, polygonLatLng = null) {
   let dataSource = 'tract';
   let tractCount = 0;
 
   let fc = { type: 'FeatureCollection', features: [] };
   try {
-    fc = await fetchTractHeatmapGeoJson(lat, lng, radiusMiles);
+    fc = await fetchTractHeatmapGeoJson(lat, lng, radiusMiles, polygonLatLng);
   } catch {
     /* fall through to county */
   }
@@ -454,6 +455,8 @@ export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET
     tracts: [],
     projection,
     dataSource,
+    /** Tracts intersecting the search radius (for map + in-radius location suggestions). */
+    tractGeoJson: fc,
   };
 }
 

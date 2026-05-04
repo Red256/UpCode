@@ -147,6 +147,154 @@ body::before {
   height: 100%;
 }
 
+.map-container .leaflet-popup.tract-leaflet-popup .leaflet-popup-content-wrapper {
+  min-width: min(92vw, 400px);
+}
+
+.map-container .leaflet-popup.tract-leaflet-popup .leaflet-popup-content {
+  margin: 12px 14px;
+  min-width: 0;
+}
+
+/* ============= HEATMAP CONTROLS ============= */
+.heatmap-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.heatmap-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.heatmap-buttons button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: none;
+}
+
+.heatmap-buttons button:hover {
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--primary);
+  transform: none;
+  box-shadow: none;
+}
+
+.heatmap-buttons button.active {
+  background: var(--primary);
+  color: white;
+}
+
+.heatmap-mode-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  max-width: 240px;
+  text-align: right;
+  line-height: 1.35;
+}
+
+.heatmap-mode-toggle {
+  display: inline-flex;
+  background: rgba(15, 23, 42, 0.06);
+  border-radius: 999px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.heatmap-mode-toggle button {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: none;
+}
+
+.heatmap-mode-toggle button:hover {
+  color: var(--primary);
+  transform: none;
+  box-shadow: none;
+}
+
+.heatmap-mode-toggle button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.heatmap-mode-toggle button.active {
+  background: white;
+  color: var(--primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.heatmap-metric-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  width: 100%;
+}
+
+.heatmap-metric-row__label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.heatmap-metric-select {
+  max-width: 100%;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.heatmap-metric-select:hover {
+  border-color: rgba(37, 99, 235, 0.35);
+}
+
+.heatmap-metric-select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
 .heatmap-overlay {
   position: absolute;
   top: 12px;
@@ -394,9 +542,16 @@ input::placeholder {
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0,0,0,0.05);
   z-index: 1000;
-  max-height: 280px;
+  max-height: min(280px, 40vh);
   overflow-y: auto;
   animation: dropIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/** Portaled to document.body so it sits above the factor panel and isn’t clipped by .panel overflow */
+.autocomplete-dropdown--portal {
+  position: fixed;
+  right: auto;
+  z-index: 12000;
 }
 
 @keyframes dropIn {
@@ -1461,7 +1616,248 @@ button:disabled {
   color: var(--text);
 }
 
+/* ============= APP ANALYZED LAYOUT ============= */
+.app--analyzed {
+  /* map (main) · controls (right) */
+}
+.app--analyzed .map-container {
+  flex: 2.4;
+}
+.app--analyzed .panel {
+  flex: 1;
+  min-width: 340px;
+  max-width: 460px;
+}
+
+/* ============= TOAST ============= */
+.toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(0);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 280px;
+  max-width: 460px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  opacity: 1;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast-in {
+  animation: toast-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast-out {
+  transform: translateX(-50%) translateY(-12px);
+  opacity: 0;
+}
+@keyframes toast-in {
+  from {
+    transform: translateX(-50%) translateY(-16px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+  }
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #fff;
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+.toast-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.005em;
+}
+.toast-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  padding: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+  box-shadow: none;
+}
+.toast-close:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--text);
+  transform: none;
+  box-shadow: none;
+}
+
+/* ============= SHAPE TOOLBAR ============= */
+.shape-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1000;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  min-width: 230px;
+  max-width: 320px;
+}
+
+.shape-toolbar-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.shape-toolbar-row {
+  display: flex;
+  gap: 4px;
+}
+
+.shape-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+  box-shadow: none;
+}
+
+.shape-btn:hover {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary);
+  border-color: rgba(37, 99, 235, 0.2);
+  transform: none;
+  box-shadow: none;
+}
+
+.shape-btn--active {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+.shape-btn--active:hover {
+  background: var(--primary);
+  color: white;
+  transform: none;
+}
+
+.shape-toolbar-hint,
+.shape-toolbar-draw-hint {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shape-toolbar-mini {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  background: rgba(37, 99, 235, 0.06);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: none;
+}
+
+.shape-toolbar-mini:hover {
+  background: rgba(37, 99, 235, 0.12);
+  transform: none;
+  box-shadow: none;
+}
+
+.shape-toolbar-mini-link {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  box-shadow: none;
+}
+
+.shape-toolbar-mini-link:hover {
+  color: #1d4ed8;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Polygon vertex / midpoint markers — divIcon styling */
+.polygon-vertex,
+.polygon-midpoint {
+  background: transparent !important;
+  border: none !important;
+}
+
 /* ============= RESPONSIVE ============= */
+@media (max-width: 1100px) {
+  .app--analyzed {
+    flex-wrap: wrap;
+  }
+  .app--analyzed .map-container {
+    flex: 1 1 60%;
+  }
+  .app--analyzed .panel {
+    flex: 1 1 35%;
+    max-width: none;
+  }
+}
+
 @media (max-width: 950px) {
   .app {
     flex-direction: column;
@@ -1491,5 +1887,16 @@ button:disabled {
       transform: translateY(0);
       opacity: 1;
     }
+  }
+  .app--analyzed {
+    flex-direction: column;
+  }
+  .app--analyzed .map-container,
+  .app--analyzed .panel {
+    flex: none;
+    width: 100%;
+  }
+  .app--analyzed .map-container {
+    height: 50vh;
   }
 }

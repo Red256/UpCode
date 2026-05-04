@@ -1,4 +1,0 @@
-geoid,tract_name,state_fips,intpt_lat,intpt_lng,income,rent,home_value,student_population,population,score_income,score_rent,score_home_value,score_student_population,acs_year
-17031803100,"Census Tract 8031; Cook County; Illinois",17,41.8781,-87.6298,55000,1200,250000,800,4000,35,42,38,45,2024
-06075010100,"Census Tract 101; San Francisco County; California",06,37.7749,-122.4194,95000,2200,850000,1200,5000,62,55,78,52,2024
-36061010000,"Census Tract 100; New York County; New York",36,40.7589,-73.9851,78000,1900,650000,900,3500,55,48,72,48,2024

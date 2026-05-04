@@ -20,6 +20,9 @@ dist
 dist-ssr
 *.local
 
+# Script debug dumps (regenerated during development)
+scripts/output/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

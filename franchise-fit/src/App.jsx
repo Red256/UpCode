@@ -3,27 +3,23 @@ import MapView from "./components/MapView";
 import AddressInput from "./components/AddressInput";
 import FactorPanel, { FACTOR_DEFAULTS } from "./components/FactorPanel";
 import ScoreCard from "./components/ScoreCard";
-import { getVerdict } from "./utils/scoreVerdict";
-import SavedLocations from "./components/SavedLocations";
 import { generateLocationReport } from "./utils/reportGenerator";
-import {
-  fetchTractHeatmapGeoJson,
-  HEATMAP_METRICS,
-  isUsApprox,
-} from "./utils/tractHeatmap";
+import { geocodeUsAddressFreeform } from "./utils/usGeocode";
+import { fetchTractHeatmapGeoJson, isUsApprox } from "./utils/tractHeatmap";
 import { fetchAreaMetrics, fetchCountyTrendForReport } from "./utils/censusApi";
+import { suggestLocationsInRadiusGradientDescent } from "./utils/locationSuggestions";
 import { ACS_HISTORY_YEARS } from "./utils/censusConstants";
 import TractDetailPanel from "./components/TractDetailPanel";
 import CelebrationOverlay from "./components/CelebrationOverlay";
+import Toast from "./components/Toast";
+import { makeCirclePolygon } from "./utils/polygon";
 import "./App.css";
 
-/** Default search text + map seed (West Town / Ukrainian Village, Chicago) */
-const DEFAULT_LOCATION =
-  "1017, North Richmond Street, West Town, Chicago, West Chicago Township, Cook County, Illinois, 60622, United States";
-const DEFAULT_CENTER = [41.9019, -87.6868];
-const DEFAULT_POPUP = "1017 N Richmond St — West Town, Chicago";
+/** Default search text + map seed (California Ave corridor, Palo Alto) */
+const DEFAULT_LOCATION = "299 California Avenue, Palo Alto, California";
+const DEFAULT_CENTER = [37.4284, -122.1438];
+const DEFAULT_POPUP = "299 California Ave — Palo Alto, CA";
 const DEFAULT_ZOOM = 13;
-const SCORE_BASE = 1.0;
 
 function buildInitialFactors() {
   const out = {};
@@ -64,40 +60,6 @@ function computeWeightedScore(factors, factorScores, factorRawValues) {
   };
 }
 
-function loadSaved() {
-  try {
-    return JSON.parse(localStorage.getItem("savedLocationsV2")) || [];
-  } catch {
-    return [];
-  }
-}
-
-function parseCsvLine(line) {
-  const out = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"' && line[i + 1] === '"' && inQuotes) {
-      cur += '"';
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-      continue;
-    }
-    if (ch === "," && !inQuotes) {
-      out.push(cur.trim());
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  out.push(cur.trim());
-  return out.map((s) => s.replace(/^"|"$/g, ""));
-}
-
 export default function App() {
   let [location, setLocation] = useState(DEFAULT_LOCATION);
   let [center, setCenter] = useState(DEFAULT_CENTER);
@@ -105,24 +67,37 @@ export default function App() {
   let [radiusMi, setRadiusMi] = useState(5);
   let [popupText, setPopupText] = useState(DEFAULT_POPUP);
   let [factors, setFactors] = useState(buildInitialFactors);
-  let [saved, setSaved] = useState(loadSaved);
   let [locationSet, setLocationSet] = useState(true);
   let [analyzed, setAnalyzed] = useState(false);
   let [analyzing, setAnalyzing] = useState(false);
   let [analysisResult, setAnalysisResult] = useState(null);
   let [suggestions, setSuggestions] = useState([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [heatmapGeoJson, setHeatmapGeoJson] = useState(null);
-  const [heatmapMetric, setHeatmapMetric] = useState("Median Income");
   const [heatmapLoading, setHeatmapLoading] = useState(false);
   const [heatmapError, setHeatmapError] = useState(null);
+  /** Bumps when user picks a location so tract layer refetches even if center coords match a prior selection. */
+  const [heatmapLoadGeneration, setHeatmapLoadGeneration] = useState(0);
   const [selectedTract, setSelectedTract] = useState(null);
   const [celebrationBurst, setCelebrationBurst] = useState(0);
   const eliteConfettiPlayedRef = useRef(false);
+  const [toastVisible, setToastVisible] = useState(false);
+  const prevAnalyzedRef = useRef(false);
+  
+  // Polygon tool state
+  const [polygon, setPolygon] = useState(null);
+  const [drawingMode, setDrawingMode] = useState(null); // null | "building"
+  const [draftPolygon, setDraftPolygon] = useState(null);
+  
+  // Trigger toast when analysis transitions from running to done
+  useEffect(() => {
+    if (analyzed && !prevAnalyzedRef.current) {
+      setToastVisible(true);
+    }
+    prevAnalyzedRef.current = analyzed;
+  }, [analyzed]);
 
-  const heatmapField =
-    HEATMAP_METRICS.find((m) => m.key === heatmapMetric)?.field ?? "income";
-
-  /** Load tract choropleth whenever the map center / radius changes (default view included). */
+  /** Load tract features whenever the map center / radius / polygon changes (default view included). */
   useEffect(() => {
     if (!isUsApprox(center[0], center[1])) {
       setHeatmapGeoJson(null);
@@ -132,15 +107,18 @@ export default function App() {
     }
     let cancelled = false;
     setHeatmapError(null);
+    setHeatmapGeoJson(null);
     (async () => {
       setHeatmapLoading(true);
       try {
-        const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi);
+        const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi, polygon);
         if (cancelled) return;
         setHeatmapGeoJson(fc);
         setHeatmapError(null);
-      } catch {
+      } catch (err) {
+        console.error("Tract heatmap load error:", err);
         if (!cancelled) {
+          // Don't show error, just use empty collection so app remains usable
           setHeatmapGeoJson({ type: "FeatureCollection", features: [] });
           setHeatmapError(null);
         }
@@ -151,29 +129,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [center, radiusMi]);
-
-  async function geocodeAddress(address) {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`
-    );
-    const data = await res.json();
-
-    if (!data || data.length === 0) return null;
-
-    return {
-      lat: parseFloat(data[0].lat),
-      lng: parseFloat(data[0].lon),
-      displayName: data[0].display_name,
-    };
-  }
+  }, [center, radiusMi, heatmapLoadGeneration, polygon]);
 
   /* Nearby suggestions feature disabled - would require additional Census API calls */
 
-  const persistSaved = (list) => {
-    setSaved(list);
-    localStorage.setItem("savedLocationsV2", JSON.stringify(list));
-  };
   
   const handleFactorChange = useCallback((key, value) => {
     setFactors((prev) => ({
@@ -189,12 +148,57 @@ export default function App() {
     }));
   }, []);
 
-  const handleSelect = (item) => {
+  const handleSelectShape = useCallback((newPolygon) => {
+    setPolygon(newPolygon);
+    setDrawingMode(null);
+    setDraftPolygon(null);
+    setHeatmapLoadGeneration((g) => g + 1);
+  }, []);
+
+  const handleStartFreeDraw = useCallback(() => {
+    setDrawingMode("building");
+    setDraftPolygon([]);
+  }, []);
+
+  const handleCancelDrawing = useCallback(() => {
+    setDrawingMode(null);
+    setDraftPolygon(null);
+  }, []);
+
+  const handleFinishDrawing = useCallback(() => {
+    if (draftPolygon && draftPolygon.length >= 3) {
+      setPolygon(draftPolygon);
+      setHeatmapLoadGeneration((g) => g + 1);
+    }
+    setDrawingMode(null);
+    setDraftPolygon(null);
+  }, [draftPolygon]);
+
+  const handlePolygonChange = useCallback((newPolygon) => {
+    setPolygon(newPolygon);
+    setHeatmapLoadGeneration((g) => g + 1);
+  }, []);
+
+  const handleClearPolygon = useCallback(() => {
+    const circleShape = makeCirclePolygon(center, radiusMi, 32);
+    setPolygon(circleShape);
+    setHeatmapLoadGeneration((g) => g + 1);
+  }, [center, radiusMi]);
+
+  const handleSelect = async (item) => {
     setLocation(item.fullName);
-    setCenter([item.lat, item.lng]);
-    setZoom(12);
     setPopupText(item.fullName);
     setLocationSet(true);
+    setZoom(12);
+    setHeatmapError(null);
+    setHeatmapGeoJson(null);
+    setHeatmapLoading(true);
+
+    const geo = await geocodeUsAddressFreeform(item.fullName);
+    const lat = geo?.lat ?? item.lat;
+    const lng = geo?.lng ?? item.lng;
+    setCenter([Number(lat), Number(lng)]);
+    setHeatmapLoadGeneration((g) => g + 1);
   };
 
   const handleAnalyze = async () => {
@@ -208,9 +212,10 @@ export default function App() {
     setHeatmapError(null);
     setSelectedTract(null);
     setSuggestions([]);
+    setSuggestionsLoading(false);
 
     try {
-      const geo = await geocodeAddress(location);
+      const geo = await geocodeUsAddressFreeform(location);
       if (!geo) {
         alert("Could not find that location. Please try a different address.");
         setAnalyzing(false);
@@ -222,7 +227,7 @@ export default function App() {
       setCenter([lat, lng]);
       setZoom(12);
 
-      const areaData = await fetchAreaMetrics(lat, lng, radiusMi);
+      const areaData = await fetchAreaMetrics(lat, lng, radiusMi, undefined, polygon);
 
       const scores = areaData.scores;
       const raw_values = {};
@@ -284,6 +289,9 @@ export default function App() {
         eliteConfettiPlayedRef.current = true;
         setCelebrationBurst((n) => n + 1);
       }
+
+      // Background: in-radius search + verify (matches Analyze scores)
+      buildLocationSuggestions(lat, lng, radiusMi, factors, areaData.tractGeoJson, polygon).catch(console.error);
     } catch (err) {
       console.error("Analysis error:", err);
       alert(err.message || "Analysis failed. Please try again.");
@@ -292,101 +300,49 @@ export default function App() {
     }
   };
 
-  const handleSave = () => {
-    const score = analysisResult?.overall ?? null;
-    if (score === null) return;
-
-    const verdict = getVerdict(score);
-    const entry = {
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
-      label: location.trim() || "Unnamed Location",
-      lat: center[0],
-      lng: center[1],
-      radiusMi,
-      score,
-      verdict: verdict.text,
-      savedAt: new Date().toISOString(),
-    };
-
-    persistSaved([entry, ...saved]);
-  };
-
-  const handleView = (s) => {
-    setCenter([s.lat, s.lng]);
-    setZoom(12);
-    setRadiusMi(s.radiusMi);
-    setPopupText(s.label);
-    setLocation(s.label);
-    setLocationSet(true);
-  };
-
-  const handleDelete = (id) => {
-    persistSaved(saved.filter((s) => s.id !== id));
-  };
+  async function buildLocationSuggestions(centerLat, centerLng, radiusMi, factors, tractGeoJson, polygonLatLng = null) {
+    setSuggestionsLoading(true);
+    try {
+      const top = await suggestLocationsInRadiusGradientDescent({
+        centerLat,
+        centerLng,
+        radiusMi,
+        factors,
+        tractGeoJson,
+        topN: 5,
+      });
+      /** Same pipeline as Analyze: area aggregate for this pin + radius (tract-at-point was only for search). */
+      const verified = await Promise.all(
+        top.map(async (loc) => {
+          try {
+            const areaData = await fetchAreaMetrics(loc.lat, loc.lng, radiusMi, undefined, polygonLatLng);
+            const weightedResult = computeWeightedScore(factors, areaData.scores, areaData.rawValues);
+            if (weightedResult) {
+              return { ...loc, score: weightedResult.overall };
+            }
+          } catch (e) {
+            console.warn("Suggestion score verify failed:", e);
+          }
+          return loc;
+        }),
+      );
+      verified.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      setSuggestions(verified);
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  }
 
   const handleSelectSuggestion = (suggestion) => {
-    setLocation(suggestion.displayName);
+    setLocation(suggestion.displayName || `${suggestion.lat.toFixed(4)}, ${suggestion.lng.toFixed(4)}`);
     setCenter([suggestion.lat, suggestion.lng]);
-    setZoom(12);
-    setPopupText(suggestion.displayName);
+    setZoom(14);
+    setPopupText(suggestion.displayName || `${suggestion.lat.toFixed(4)}, ${suggestion.lng.toFixed(4)}`);
     setLocationSet(true);
-    setSuggestions([]);
-    setAnalyzed(false);
-    setAnalysisResult(null);
-  };
-
-  const handleExport = () => {
-    const header = "label,lat,lng,radiusMi,score,verdict,savedAt\n";
-    const rows = saved.map((s) => {
-      const safeLabel = `"${String(s.label).replaceAll('"', '""')}"`;
-      return [
-        safeLabel,
-        s.lat,
-        s.lng,
-        s.radiusMi,
-        s.score,
-        `"${String(s.verdict).replaceAll('"', '""')}"`,
-        s.savedAt,
-      ].join(",");
-    });
-
-    const csv = header + rows.join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "franchisefit_saved_locations.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImport = (file) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result || "");
-      const lines = text.split("\n").filter(Boolean);
-      const rows = lines.slice(1);
-      const newEntries = [];
-
-      rows.forEach((line) => {
-        const parts = parseCsvLine(line);
-        if (!parts || parts.length < 7) return;
-        const [label, lat, lng, rMi, score, verdict, savedAt] = parts;
-        newEntries.push({
-          id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()),
-          label: label || "Imported Location",
-          lat: Number(lat),
-          lng: Number(lng),
-          radiusMi: Number(rMi),
-          score: Number(score),
-          verdict: verdict || "Imported",
-          savedAt: savedAt || new Date().toISOString(),
-        });
-      });
-
-      persistSaved([...newEntries, ...saved]);
-    };
-    reader.readAsText(file);
+    setHeatmapError(null);
+    setHeatmapGeoJson(null);
+    setHeatmapLoading(true);
+    setHeatmapLoadGeneration((g) => g + 1);
   };
 
   const handleDownloadReport = async () => {
@@ -418,23 +374,34 @@ export default function App() {
   const enabledCount = Object.values(factors).filter((f) => f.enabled).length;
   const eliteScore =
     analyzed && analysisResult != null && analysisResult.overall >= 85;
+  const wideLayout = analyzing || analyzed;
 
   return (
-    <div className={`app${eliteScore ? " app--elite-score" : ""}`}>
+    <div className={`app${eliteScore ? " app--elite-score" : ""}${wideLayout ? " app--analyzed" : ""}`}>
       <CelebrationOverlay burstKey={celebrationBurst} />
+
       <MapView
         center={center}
         zoom={zoom}
         radiusMi={radiusMi}
         popupText={popupText}
         heatmapData={heatmapGeoJson}
-        heatmapMetric={heatmapMetric}
-        heatmapField={heatmapField}
         heatmapLoading={heatmapLoading}
         heatmapError={heatmapError}
-        onHeatmapMetricChange={setHeatmapMetric}
+        factors={factors}
         onTractClick={setSelectedTract}
         eliteScore={eliteScore}
+        polygon={polygon}
+        drawingMode={drawingMode}
+        draftPolygon={draftPolygon}
+        onPolygonChange={handlePolygonChange}
+        onDraftChange={setDraftPolygon}
+        onExitDrawing={handleCancelDrawing}
+        onSelectShape={handleSelectShape}
+        onStartFreeDraw={handleStartFreeDraw}
+        onCancelDrawing={handleCancelDrawing}
+        onFinishDrawing={handleFinishDrawing}
+        onClearPolygon={polygon ? handleClearPolygon : null}
       />
 
       {selectedTract && (
@@ -525,8 +492,8 @@ export default function App() {
           <ScoreCard factors={factors} analysisResult={analysisResult} />
         )}
 
-        {/* Nearby Suggestions */}
-        {analyzed && suggestions.length > 0 && (
+        {/* Nearby suggestions (same list as former left panel) */}
+        {analyzed && (
           <div className="card">
             <div className="card-label">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -535,74 +502,89 @@ export default function App() {
               </svg>
               Better Locations Nearby
             </div>
-            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
-              Found {suggestions.length} location{suggestions.length > 1 ? 's' : ''} with higher scores within 5 miles
-            </div>
-            {suggestions.map((suggestion, idx) => (
+            {suggestions.length > 0 ? (
+              <>
+                <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
+                  Found {suggestions.length} location{suggestions.length > 1 ? 's' : ''} with higher scores within your search radius
+                </div>
+                {suggestions.map((suggestion, idx) => (
+                  <div
+                    key={`${suggestion.lat}-${suggestion.lng}-${idx}`}
+                    onClick={() => handleSelectSuggestion(suggestion)}
+                    style={{
+                      padding: '12px',
+                      background: '#f9fafb',
+                      borderRadius: '8px',
+                      marginBottom: '8px',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      border: '1px solid #e5e7eb'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = '#f3f4f6';
+                      e.currentTarget.style.borderColor = '#d1d5db';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = '#f9fafb';
+                      e.currentTarget.style.borderColor = '#e5e7eb';
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '14px', fontWeight: '500', color: '#111827', marginBottom: '4px' }}>
+                          {(suggestion.displayName || `${suggestion.lat?.toFixed(4)}, ${suggestion.lng?.toFixed(4)}`)
+                            .split(',')
+                            .slice(0, 2)
+                            .join(',')}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#6b7280' }}>
+                          {typeof suggestion.distance === 'number' && !Number.isNaN(suggestion.distance)
+                            ? `${suggestion.distance.toFixed(1)} mi from pin`
+                            : '—'}
+                        </div>
+                      </div>
+                      <div style={{
+                        fontSize: '18px',
+                        fontWeight: '600',
+                        color:
+                          (suggestion.score ?? 0) >= 75
+                            ? '#10b981'
+                            : (suggestion.score ?? 0) >= 60
+                              ? '#3b82f6'
+                              : '#6b7280',
+                        marginLeft: '12px'
+                      }}>
+                        {suggestion.score ?? '—'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            ) : (
               <div
-                key={idx}
-                onClick={() => handleSelectSuggestion(suggestion)}
                 style={{
-                  padding: '12px',
-                  background: '#f9fafb',
-                  borderRadius: '8px',
-                  marginBottom: '8px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                  border: '1px solid #e5e7eb'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = '#f3f4f6';
-                  e.currentTarget.style.borderColor = '#d1d5db';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = '#f9fafb';
-                  e.currentTarget.style.borderColor = '#e5e7eb';
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '24px 12px',
+                  color: '#6b7280',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '14px', fontWeight: '500', color: '#111827', marginBottom: '4px' }}>
-                      {suggestion.displayName.split(',').slice(0, 2).join(',')}
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                      {suggestion.distance.toFixed(1)} mi away
-                    </div>
-                  </div>
-                  <div style={{
-                    fontSize: '18px',
-                    fontWeight: '600',
-                    color: suggestion.score >= 75 ? '#10b981' : suggestion.score >= 60 ? '#3b82f6' : '#6b7280',
-                    marginLeft: '12px'
-                  }}>
-                    {suggestion.score}
-                  </div>
-                </div>
+                {suggestionsLoading && <span className="spinner" />}
+                <p style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#111827' }}>Loading</p>
               </div>
-            ))}
+            )}
           </div>
         )}
 
-        {/* Save button — only after analysis */}
+        {/* Download report — only after analysis */}
         {analyzed && analysisResult && (
           <div className="card">
             <button
               className="save-btn"
-              onClick={handleSave}
-              disabled={enabledCount === 0}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-                <polyline points="17 21 17 13 7 13 7 21" />
-                <polyline points="7 3 7 8 15 8" />
-              </svg>
-              Save Location
-            </button>
-            <button
-              className="save-btn"
               onClick={handleDownloadReport}
               style={{ 
-                marginTop: '8px', 
                 background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
                 boxShadow: '0 2px 8px rgba(16, 185, 129, 0.25)'
               }}
@@ -618,22 +600,28 @@ export default function App() {
           </div>
         )}
 
-        {/* Saved Locations */}
-        <SavedLocations
-          saved={saved}
-          onView={handleView}
-          onDelete={handleDelete}
-          onExport={handleExport}
-          onImport={handleImport}
-        />
-
         {/* Footer */}
         <div className="panel-footer">
           <span>FranchiseFit MVP</span>
           <span className="footer-dot" />
-          <span>{enabledCount} of 5 factors active</span>
+          <span>
+            {enabledCount} of {FACTOR_DEFAULTS.length} factors active
+          </span>
         </div>
       </div>
+
+      <Toast
+        visible={toastVisible}
+        onClose={() => setToastVisible(false)}
+        message="Analysis complete"
+        subMessage={
+          suggestions.length > 0
+            ? `${suggestions.length} recommendation${suggestions.length === 1 ? "" : "s"} identified`
+            : analysisResult
+              ? `Score: ${analysisResult.overall}/100`
+              : "Results ready"
+        }
+      />
     </div>
   );
 }
