@@ -1,6 +1,8 @@
 # Live site: https://red256.github.io/PA-UpCode/
 # Repo → Settings → Pages → Build and deployment → Source: GitHub Actions.
-# Optional: add repository Secrets VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY so CI builds match local .env.
+# Optional: add Repository secrets VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (Settings →
+# Secrets and variables → Actions). Environment-only secrets on "github-pages" are NOT visible
+# to the build job unless you also add them at repository level or attach `environment:` to build.
 name: Deploy to GitHub Pages
 
 on:

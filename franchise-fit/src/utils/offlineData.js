@@ -2,14 +2,15 @@
  * Census tract/county ACS — Supabase only (no CSV or other fallbacks).
  */
 
-import { supabase } from '../lib/supabaseClient';
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_KEY);
+const SUPABASE_ENABLED = isSupabaseConfigured;
 
 if (SUPABASE_ENABLED) {
-  console.log('[OfflineData] Supabase:', `${SUPABASE_URL?.slice(0, 40)}...`);
+  console.log(
+    '[OfflineData] Supabase:',
+    `${(import.meta.env.VITE_SUPABASE_URL ?? '').trim().slice(0, 40)}...`,
+  );
 } else {
   console.warn('[OfflineData] Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY — ACS data unavailable.');
 }

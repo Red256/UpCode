@@ -2,13 +2,11 @@
  * Supabase Postgres RPC wrappers — replace Census/TIGER/Nominatim once data + functions are loaded.
  * Expected RPC names match franchise-fit/supabase/schema.sql
  */
-import { supabase } from "../lib/supabaseClient";
+import { supabase, isSupabaseConfigured } from "../lib/supabaseClient";
 import { ACS_DATASET_YEAR } from "./censusConstants";
 
 function assertConfigured() {
-  const url = import.meta.env.VITE_SUPABASE_URL;
-  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  if (!url || !key) {
+  if (!isSupabaseConfigured || !supabase) {
     throw new Error(
       "Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env (see .env.example)."
     );
