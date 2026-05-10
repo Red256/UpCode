@@ -150,7 +150,7 @@ export default function MapView({
               className={tractSurfaceMode === "kriging" ? "active" : ""}
               onClick={() => setTractSurfaceMode("kriging")}
             >
-              Score heatmap
+              Heatmap
             </button>
           </div>
           <label className="heatmap-metric-row">
