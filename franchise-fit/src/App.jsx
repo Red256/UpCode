@@ -4,7 +4,7 @@ import AddressInput from "./components/AddressInput";
 import FactorPanel, { FACTOR_DEFAULTS } from "./components/FactorPanel";
 import ScoreCard from "./components/ScoreCard";
 import { generateLocationReport } from "./utils/reportGenerator";
-import { geocodeUsAddressFreeform } from "./utils/usGeocode";
+import { geocodeUsAddressFreeform, reverseGeocodeLatLng } from "./utils/usGeocode";
 import { fetchTractHeatmapGeoJson, isUsApprox } from "./utils/tractHeatmap";
 import { fetchAreaMetrics, fetchCountyTrendForReport } from "./utils/censusApi";
 import { suggestLocationsInRadiusGradientDescent } from "./utils/locationSuggestions";
@@ -12,14 +12,33 @@ import { ACS_HISTORY_YEARS } from "./utils/censusConstants";
 import TractDetailPanel from "./components/TractDetailPanel";
 import CelebrationOverlay from "./components/CelebrationOverlay";
 import Toast from "./components/Toast";
-import { makeCirclePolygon } from "./utils/polygon";
+import RecommendationsPanel from "./components/RecommendationsPanel";
 import "./App.css";
+
+/** Census factor keys → RecommendationsPanel sub-score props */
+function attachRecommendationSubscores(areaScores) {
+  return {
+    income_score: areaScores["Median Income"],
+    rent_score: areaScores["Median Rent"],
+    home_value_score: areaScores["Median Home Value"],
+    school_score: areaScores.School,
+  };
+}
 
 /** Default search text + map seed (California Ave corridor, Palo Alto) */
 const DEFAULT_LOCATION = "299 California Avenue, Palo Alto, California";
 const DEFAULT_CENTER = [37.4284, -122.1438];
 const DEFAULT_POPUP = "299 California Ave — Palo Alto, CA";
 const DEFAULT_ZOOM = 13;
+
+/** If geocode moves the pin this far from the current center, drop custom polygon (shape was for the old location). */
+const RESET_SHAPE_IF_PIN_MOVED_MI = 0.75;
+
+function pinMovedEnoughToResetShape(prevLat, prevLng, nextLat, nextLng, thresholdMi = RESET_SHAPE_IF_PIN_MOVED_MI) {
+  const dLat = (nextLat - prevLat) * 69;
+  const dLng = (nextLng - prevLng) * 69 * Math.cos((prevLat * Math.PI) / 180);
+  return Math.hypot(dLat, dLng) >= thresholdMi;
+}
 
 function buildInitialFactors() {
   const out = {};
@@ -78,11 +97,15 @@ export default function App() {
   const [heatmapError, setHeatmapError] = useState(null);
   /** Bumps when user picks a location so tract layer refetches even if center coords match a prior selection. */
   const [heatmapLoadGeneration, setHeatmapLoadGeneration] = useState(0);
+  /** Monotonic id so stale in-flight tract loads cannot commit after a newer load superseded them. */
+  const heatmapFetchSeqRef = useRef(0);
   const [selectedTract, setSelectedTract] = useState(null);
   const [celebrationBurst, setCelebrationBurst] = useState(0);
   const eliteConfettiPlayedRef = useRef(false);
   const [toastVisible, setToastVisible] = useState(false);
   const prevAnalyzedRef = useRef(false);
+  /** Side panel: analysis controls vs ranked recommendations (same scoring pipeline). */
+  const [resultView, setResultView] = useState(/** @type {'analysis' | 'recommendations'} */ ("analysis"));
   
   // Polygon tool state
   const [polygon, setPolygon] = useState(null);
@@ -99,6 +122,7 @@ export default function App() {
 
   /** Load tract features whenever the map center / radius / polygon changes (default view included). */
   useEffect(() => {
+    const seq = ++heatmapFetchSeqRef.current;
     if (!isUsApprox(center[0], center[1])) {
       setHeatmapGeoJson(null);
       setHeatmapError("Tract heatmap only available for U.S. locations.");
@@ -107,23 +131,24 @@ export default function App() {
     }
     let cancelled = false;
     setHeatmapError(null);
-    setHeatmapGeoJson(null);
     (async () => {
       setHeatmapLoading(true);
       try {
         const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi, polygon);
-        if (cancelled) return;
+        if (cancelled || seq !== heatmapFetchSeqRef.current) return;
         setHeatmapGeoJson(fc);
         setHeatmapError(null);
       } catch (err) {
         console.error("Tract heatmap load error:", err);
-        if (!cancelled) {
+        if (!cancelled && seq === heatmapFetchSeqRef.current) {
           // Don't show error, just use empty collection so app remains usable
           setHeatmapGeoJson({ type: "FeatureCollection", features: [] });
           setHeatmapError(null);
         }
       } finally {
-        if (!cancelled) setHeatmapLoading(false);
+        if (!cancelled && seq === heatmapFetchSeqRef.current) {
+          setHeatmapLoading(false);
+        }
       }
     })();
     return () => {
@@ -131,9 +156,6 @@ export default function App() {
     };
   }, [center, radiusMi, heatmapLoadGeneration, polygon]);
 
-  /* Nearby suggestions feature disabled - would require additional Census API calls */
-
-  
   const handleFactorChange = useCallback((key, value) => {
     setFactors((prev) => ({
       ...prev,
@@ -155,7 +177,15 @@ export default function App() {
     setHeatmapLoadGeneration((g) => g + 1);
   }, []);
 
+  /** New pin / address → drop custom polygon so analysis matches default search circle */
+  const resetCustomShapeSelection = useCallback(() => {
+    setPolygon(null);
+    setDrawingMode(null);
+    setDraftPolygon(null);
+  }, []);
+
   const handleStartFreeDraw = useCallback(() => {
+    setSelectedTract(null);
     setDrawingMode("building");
     setDraftPolygon([]);
   }, []);
@@ -180,18 +210,22 @@ export default function App() {
   }, []);
 
   const handleClearPolygon = useCallback(() => {
-    const circleShape = makeCirclePolygon(center, radiusMi, 32);
-    setPolygon(circleShape);
+    setPolygon(null);
+    setDrawingMode(null);
+    setDraftPolygon(null);
     setHeatmapLoadGeneration((g) => g + 1);
-  }, [center, radiusMi]);
+  }, []);
 
   const handleSelect = async (item) => {
+    resetCustomShapeSelection();
+    setSuggestions([]);
+    setSuggestionsLoading(false);
+    setResultView("analysis");
     setLocation(item.fullName);
     setPopupText(item.fullName);
     setLocationSet(true);
     setZoom(12);
     setHeatmapError(null);
-    setHeatmapGeoJson(null);
     setHeatmapLoading(true);
 
     const geo = await geocodeUsAddressFreeform(item.fullName);
@@ -206,9 +240,9 @@ export default function App() {
     if (enabled.length === 0) return;
 
     setAnalyzing(true);
+    setResultView("analysis");
     setAnalyzed(false);
     setAnalysisResult(null);
-    setHeatmapGeoJson(null);
     setHeatmapError(null);
     setSelectedTract(null);
     setSuggestions([]);
@@ -224,10 +258,16 @@ export default function App() {
       const lat = geo.lat;
       const lng = geo.lng;
 
+      let polygonForMetrics = polygon;
+      if (pinMovedEnoughToResetShape(center[0], center[1], lat, lng)) {
+        resetCustomShapeSelection();
+        polygonForMetrics = null;
+      }
+
       setCenter([lat, lng]);
       setZoom(12);
 
-      const areaData = await fetchAreaMetrics(lat, lng, radiusMi, undefined, polygon);
+      const areaData = await fetchAreaMetrics(lat, lng, radiusMi, undefined, polygonForMetrics);
 
       const scores = areaData.scores;
       const raw_values = {};
@@ -291,7 +331,9 @@ export default function App() {
       }
 
       // Background: in-radius search + verify (matches Analyze scores)
-      buildLocationSuggestions(lat, lng, radiusMi, factors, areaData.tractGeoJson, polygon).catch(console.error);
+      buildLocationSuggestions(lat, lng, radiusMi, factors, areaData.tractGeoJson, polygonForMetrics).catch(
+        console.error,
+      );
     } catch (err) {
       console.error("Analysis error:", err);
       alert(err.message || "Analysis failed. Please try again.");
@@ -318,7 +360,12 @@ export default function App() {
             const areaData = await fetchAreaMetrics(loc.lat, loc.lng, radiusMi, undefined, polygonLatLng);
             const weightedResult = computeWeightedScore(factors, areaData.scores, areaData.rawValues);
             if (weightedResult) {
-              return { ...loc, score: weightedResult.overall };
+              return {
+                ...loc,
+                lon: loc.lng,
+                score: weightedResult.overall,
+                ...attachRecommendationSubscores(areaData.scores),
+              };
             }
           } catch (e) {
             console.warn("Suggestion score verify failed:", e);
@@ -326,21 +373,64 @@ export default function App() {
           return loc;
         }),
       );
-      verified.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      setSuggestions(verified);
+      const sorted = [...verified].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      const ranked = sorted.map((row, i) => ({
+        ...row,
+        rank: i + 1,
+        geocodedLabel: null,
+        geocodeResolved: false,
+      }));
+      setSuggestions(ranked);
+      ranked.forEach((row) => {
+        reverseGeocodeLatLng(row.lat, row.lng).then((hit) => {
+          setSuggestions((prev) =>
+            prev.map((s) =>
+              s.rank === row.rank && s.lat === row.lat && s.lng === row.lng
+                ? { ...s, geocodedLabel: hit?.displayName ?? null, geocodeResolved: true }
+                : s,
+            ),
+          );
+        });
+      });
     } finally {
       setSuggestionsLoading(false);
     }
   }
 
   const handleSelectSuggestion = (suggestion) => {
-    setLocation(suggestion.displayName || `${suggestion.lat.toFixed(4)}, ${suggestion.lng.toFixed(4)}`);
-    setCenter([suggestion.lat, suggestion.lng]);
+    setResultView("analysis");
+    setSelectedTract(null);
+    resetCustomShapeSelection();
+    const lat = Number(suggestion.lat);
+    const lng = Number(suggestion.lng ?? suggestion.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      console.warn("Recommendation missing coordinates:", suggestion);
+      return;
+    }
+    const shortTitle = (s) =>
+      s
+        ? s
+            .split(",")
+            .slice(0, 3)
+            .join(",")
+            .trim()
+        : "";
+    let label;
+    if (suggestion.geocodedLabel) {
+      label = shortTitle(suggestion.geocodedLabel);
+    } else if (suggestion.displayName) {
+      label = shortTitle(suggestion.displayName);
+    } else if (!suggestion.geocodeResolved) {
+      label = "Recommendation";
+    } else {
+      label = "Address unavailable for this pin";
+    }
+    setLocation(label);
+    setCenter([lat, lng]);
     setZoom(14);
-    setPopupText(suggestion.displayName || `${suggestion.lat.toFixed(4)}, ${suggestion.lng.toFixed(4)}`);
+    setPopupText(label);
     setLocationSet(true);
     setHeatmapError(null);
-    setHeatmapGeoJson(null);
     setHeatmapLoading(true);
     setHeatmapLoadGeneration((g) => g + 1);
   };
@@ -375,9 +465,13 @@ export default function App() {
   const eliteScore =
     analyzed && analysisResult != null && analysisResult.overall >= 85;
   const wideLayout = analyzing || analyzed;
+  const showRecommendationsChrome = analyzed && resultView === "recommendations";
 
   return (
-    <div className={`app${eliteScore ? " app--elite-score" : ""}${wideLayout ? " app--analyzed" : ""}`}>
+    <div
+      className={`app${eliteScore ? " app--elite-score" : ""}${wideLayout ? " app--analyzed" : ""}`}
+      data-view={wideLayout ? resultView : undefined}
+    >
       <CelebrationOverlay burstKey={celebrationBurst} />
 
       <MapView
@@ -389,6 +483,8 @@ export default function App() {
         heatmapLoading={heatmapLoading}
         heatmapError={heatmapError}
         factors={factors}
+        recommendationPins={analyzed ? suggestions : []}
+        onRecommendationPinClick={handleSelectSuggestion}
         onTractClick={setSelectedTract}
         eliteScore={eliteScore}
         polygon={polygon}
@@ -408,6 +504,16 @@ export default function App() {
         <TractDetailPanel
           tract={selectedTract}
           onClose={() => setSelectedTract(null)}
+        />
+      )}
+
+      {wideLayout && (
+        <RecommendationsPanel
+          topLocations={suggestions}
+          analyzing={suggestionsLoading}
+          analyzed={analyzed}
+          onLocationClick={handleSelectSuggestion}
+          onBackToAnalysis={() => setResultView("analysis")}
         />
       )}
 
@@ -492,89 +598,19 @@ export default function App() {
           <ScoreCard factors={factors} analysisResult={analysisResult} />
         )}
 
-        {/* Nearby suggestions (same list as former left panel) */}
-        {analyzed && (
+        {analyzed && analysisResult && !showRecommendationsChrome && (
           <div className="card">
-            <div className="card-label">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <button
+              type="button"
+              className="view-switch-btn"
+              onClick={() => setResultView("recommendations")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
                 <circle cx="12" cy="10" r="3" />
               </svg>
-              Better Locations Nearby
-            </div>
-            {suggestions.length > 0 ? (
-              <>
-                <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '12px' }}>
-                  Found {suggestions.length} location{suggestions.length > 1 ? 's' : ''} with higher scores within your search radius
-                </div>
-                {suggestions.map((suggestion, idx) => (
-                  <div
-                    key={`${suggestion.lat}-${suggestion.lng}-${idx}`}
-                    onClick={() => handleSelectSuggestion(suggestion)}
-                    style={{
-                      padding: '12px',
-                      background: '#f9fafb',
-                      borderRadius: '8px',
-                      marginBottom: '8px',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      border: '1px solid #e5e7eb'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = '#f3f4f6';
-                      e.currentTarget.style.borderColor = '#d1d5db';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = '#f9fafb';
-                      e.currentTarget.style.borderColor = '#e5e7eb';
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: '14px', fontWeight: '500', color: '#111827', marginBottom: '4px' }}>
-                          {(suggestion.displayName || `${suggestion.lat?.toFixed(4)}, ${suggestion.lng?.toFixed(4)}`)
-                            .split(',')
-                            .slice(0, 2)
-                            .join(',')}
-                        </div>
-                        <div style={{ fontSize: '12px', color: '#6b7280' }}>
-                          {typeof suggestion.distance === 'number' && !Number.isNaN(suggestion.distance)
-                            ? `${suggestion.distance.toFixed(1)} mi from pin`
-                            : '—'}
-                        </div>
-                      </div>
-                      <div style={{
-                        fontSize: '18px',
-                        fontWeight: '600',
-                        color:
-                          (suggestion.score ?? 0) >= 75
-                            ? '#10b981'
-                            : (suggestion.score ?? 0) >= 60
-                              ? '#3b82f6'
-                              : '#6b7280',
-                        marginLeft: '12px'
-                      }}>
-                        {suggestion.score ?? '—'}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '10px',
-                  padding: '24px 12px',
-                  color: '#6b7280',
-                }}
-              >
-                {suggestionsLoading && <span className="spinner" />}
-                <p style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: '#111827' }}>Loading</p>
-              </div>
-            )}
+              <span>View recommendations</span>
+            </button>
           </div>
         )}
 

@@ -24,22 +24,25 @@ const AVAILABLE_BOUNDARY_STATES = new Set(
     .filter(Boolean),
 );
 
-const METRIC_KEYS = ['income', 'rent', 'homeValue', 'studentPopulation'];
-
 /** Precomputed per-tract scores + raw ACS (scripts/precomputeAllTractScores.mjs). */
 const tractScoreGlobs = import.meta.glob('../data/tractScores/*.json');
 
 async function loadTractScoreLookup(stateFipsSet) {
   const merged = {};
-  for (const st of stateFipsSet) {
-    const path = `../data/tractScores/${st}.json`;
-    const loader = tractScoreGlobs[path];
-    if (loader) {
-      const mod = await loader();
-      const data = mod.default ?? mod;
-      Object.assign(merged, data);
-    }
-  }
+  await Promise.all(
+    [...stateFipsSet].map(async (st) => {
+      const path = `../data/tractScores/${st}.json`;
+      const loader = tractScoreGlobs[path];
+      if (!loader) return;
+      try {
+        const mod = await loader();
+        const data = mod.default ?? mod;
+        Object.assign(merged, data);
+      } catch {
+        /* missing or corrupt shard */
+      }
+    }),
+  );
   return merged;
 }
 
@@ -62,32 +65,31 @@ const localBoundaryCache = new Map();
  * Returns features with geometry for tracts in the specified states.
  */
 async function loadLocalBoundaries(stateFipsSet) {
-  const features = [];
-  
-  for (const st of stateFipsSet) {
-    if (localBoundaryCache.has(st)) {
-      features.push(...localBoundaryCache.get(st));
-      continue;
-    }
-    
-    const path = `../data/tractBoundaries/${st}.json`;
-    const loader = tractBoundaryGlobs[path];
-    
-    if (loader) {
+  const states = [...stateFipsSet];
+  const chunks = await Promise.all(
+    states.map(async (st) => {
+      if (localBoundaryCache.has(st)) {
+        return localBoundaryCache.get(st);
+      }
+      const path = `../data/tractBoundaries/${st}.json`;
+      const loader = tractBoundaryGlobs[path];
+      if (!loader) {
+        localBoundaryCache.set(st, []);
+        return [];
+      }
       try {
         const mod = await loader();
         const fc = mod.default ?? mod;
         const stateFeatures = fc?.features || [];
         localBoundaryCache.set(st, stateFeatures);
-        features.push(...stateFeatures);
+        return stateFeatures;
       } catch {
-        // File might not exist yet
         localBoundaryCache.set(st, []);
+        return [];
       }
-    }
-  }
-  
-  return features;
+    }),
+  );
+  return chunks.flat();
 }
 
 /**

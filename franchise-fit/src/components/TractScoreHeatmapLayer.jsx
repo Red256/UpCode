@@ -10,6 +10,7 @@ import {
   CHOROPLETH_METRIC_WEIGHTED,
 } from "../utils/tractOverallScore";
 import { featureAreaSqMi } from "../utils/tractAreaUnits";
+import { formatMedianHomeValueDisplay } from "../utils/censusConstants";
 import {
   analysisRingBbox,
   fetchWaterPolygonsForBounds,
@@ -17,6 +18,7 @@ import {
   lngLatInWater,
   tractShouldMaskWater,
 } from "../utils/osmWater";
+import { pointInPolygon, polygonBbox } from "../utils/polygon";
 
 /** Screen-space grid for score heatmap; IDW uses every tract in the analysis disk (no subsampling). */
 const GRID_COLS = 72;
@@ -112,8 +114,16 @@ function darkenChoroplethStyle(base) {
   return out;
 }
 
-/** Smooth score surface (IDW) under tract hit-targets; masked to the analysis circle and mask-eligible OSM water. */
-function TractKrigingRaster({ items, analysisCenterLat, analysisCenterLng, analysisRadiusMi, waterIndex }) {
+/** Smooth score surface (IDW); masked to analysis circle, custom polygon (if any), and OSM water. */
+function TractKrigingRaster({
+  items,
+  analysisCenterLat,
+  analysisCenterLng,
+  analysisRadiusMi,
+  waterIndex,
+  analysisPolygonLatLng,
+  analysisPolygonKey,
+}) {
   const map = useMap();
   const overlayRef = useRef(null);
   const debounceRef = useRef(null);
@@ -154,15 +164,29 @@ function TractKrigingRaster({ items, analysisCenterLat, analysisCenterLng, analy
       const RProj = (R * 1.08) / 69.0;
       const RSq = RProj * RProj;
 
+      const usePoly =
+        Array.isArray(analysisPolygonLatLng) && analysisPolygonLatLng.length >= 3;
+
+      const sampleInZone = (lat, lng) => {
+        if (usePoly) return pointInPolygon([lat, lng], analysisPolygonLatLng);
+        const [px, py] = projectKrigXY(lng, lat, lat0);
+        return distSqProjected(px, py, cX, cY) <= RSq * 1.02;
+      };
+
+      const cellInZone = (lat, lng) => {
+        if (usePoly) return pointInPolygon([lat, lng], analysisPolygonLatLng);
+        const [px, py] = projectKrigXY(lng, lat, lat0);
+        return distSqProjected(px, py, cX, cY) <= RSq;
+      };
+
       /** @type {{ px: number; py: number; overall: number }[]} */
       const projectedSamples = [];
       for (const p of items) {
         const v = Number(p.overall);
         if (!Number.isFinite(v)) continue;
+        if (!sampleInZone(p.lat, p.lng)) continue;
         const [px, py] = projectKrigXY(p.lng, p.lat, lat0);
-        if (distSqProjected(px, py, cX, cY) <= RSq * 1.02) {
-          projectedSamples.push({ px, py, overall: v });
-        }
+        projectedSamples.push({ px, py, overall: v });
       }
       if (projectedSamples.length < 3) {
         projectedSamples.length = 0;
@@ -191,9 +215,7 @@ function TractKrigingRaster({ items, analysisCenterLat, analysisCenterLng, analy
           const lng = west + (i + 0.5) * dLng;
           const lat = north - (j + 0.5) * dLat;
           const ix = (j * cols + i) * 4;
-          const [px, py] = projectKrigXY(lng, lat, lat0);
-          const dSq = distSqProjected(px, py, cX, cY);
-          if (dSq > RSq) {
+          if (!cellInZone(lat, lng)) {
             img.data[ix + 3] = 0;
             continue;
           }
@@ -201,6 +223,7 @@ function TractKrigingRaster({ items, analysisCenterLat, analysisCenterLng, analy
             img.data[ix + 3] = 0;
             continue;
           }
+          const [px, py] = projectKrigXY(lng, lat, lat0);
           const zRaw = idwScoreAt(px, py, projectedSamples, IDW_POWER);
           if (!Number.isFinite(zRaw)) {
             img.data[ix + 3] = 0;
@@ -252,7 +275,7 @@ function TractKrigingRaster({ items, analysisCenterLat, analysisCenterLng, analy
         overlayRef.current = null;
       }
     };
-  }, [map, items, analysisCenterLat, analysisCenterLng, analysisRadiusMi, waterIndex]);
+  }, [map, items, analysisCenterLat, analysisCenterLng, analysisRadiusMi, waterIndex, analysisPolygonKey, analysisPolygonLatLng]);
 
   return null;
 }
@@ -266,10 +289,16 @@ export default function TractScoreHeatmapLayer({
   surfaceMode = "choropleth",
   choroplethMetric = CHOROPLETH_METRIC_WEIGHTED,
   disableInteraction = false,
+  analysisPolygonLatLng = null,
 }) {
   const map = useMap();
   const analysisCenterLat = analysisCenter?.[0];
   const analysisCenterLng = analysisCenter?.[1];
+
+  const analysisPolygonKey = useMemo(() => {
+    if (!analysisPolygonLatLng || analysisPolygonLatLng.length < 3) return "";
+    return JSON.stringify(analysisPolygonLatLng);
+  }, [analysisPolygonLatLng]);
 
   const [waterFc, setWaterFc] = useState(() => ({ type: "FeatureCollection", features: [] }));
   /** False until OSM water fetch settles — avoids painting land styling then flipping after mask loads. */
@@ -331,11 +360,26 @@ export default function TractScoreHeatmapLayer({
     }
     let cancelled = false;
     queueMicrotask(() => setWaterResolved(false));
-    const { south, west, north, east } = analysisRingBbox(
-      analysisCenterLat,
-      analysisCenterLng,
-      Number(analysisRadiusMi),
-    );
+
+    let south;
+    let west;
+    let north;
+    let east;
+    if (analysisPolygonLatLng?.length >= 3) {
+      const bb = polygonBbox(analysisPolygonLatLng);
+      const padDeg = 0.04;
+      south = bb.minLat - padDeg;
+      north = bb.maxLat + padDeg;
+      west = bb.minLng - padDeg;
+      east = bb.maxLng + padDeg;
+    } else {
+      const ring = analysisRingBbox(analysisCenterLat, analysisCenterLng, Number(analysisRadiusMi));
+      south = ring.south;
+      west = ring.west;
+      north = ring.north;
+      east = ring.east;
+    }
+
     fetchWaterPolygonsForBounds(south, west, north, east)
       .then((fc) => {
         if (!cancelled) {
@@ -352,7 +396,7 @@ export default function TractScoreHeatmapLayer({
     return () => {
       cancelled = true;
     };
-  }, [analysisCenterLat, analysisCenterLng, analysisRadiusMi]);
+  }, [analysisCenterLat, analysisCenterLng, analysisRadiusMi, analysisPolygonKey, analysisPolygonLatLng]);
 
   const waterIndex = useMemo(() => prepWaterIndex(waterFc), [waterFc]);
 
@@ -395,6 +439,22 @@ export default function TractScoreHeatmapLayer({
   useEffect(() => {
     tractChoroplethStyleRef.current = tractChoroplethStyle;
   }, [tractChoroplethStyle]);
+
+  /** Entering free-draw: clear stuck choropleth hover (listeners may have been removed). */
+  useEffect(() => {
+    if (!disableInteraction) return;
+    const layer = hoveredChoroplethLayerRef.current;
+    const feat = layer?._tractHoverFeature;
+    const fn = tractChoroplethStyleRef.current;
+    if (layer && feat && fn) {
+      try {
+        layer.setStyle(fn(feat));
+      } catch {
+        /* ignore */
+      }
+    }
+    hoveredChoroplethLayerRef.current = null;
+  }, [disableInteraction]);
 
   const items = useMemo(() => {
     if (!data?.features?.length) return [];
@@ -449,7 +509,7 @@ export default function TractScoreHeatmapLayer({
         </div>
         <div>Median income: {fmtMoney(r.income)}</div>
         <div>Median gross rent: {fmtMoney(r.rent)}</div>
-        <div>Median home value: {fmtMoney(r.homeValue)}</div>
+        <div>Median home value: {formatMedianHomeValueDisplay(r.homeValue)}</div>
         <div>Students per sq mi (ACS): {stud}</div>
         <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
           Click for trends &amp; projections
@@ -529,6 +589,7 @@ export default function TractScoreHeatmapLayer({
     <Fragment>
       {choroplethData && (
         <GeoJSON
+          key={disableInteraction ? "tract-choro-no-pointer" : "tract-choro-pointer"}
           data={choroplethData}
           style={tractChoroplethStyle}
           interactive={!disableInteraction}
@@ -542,6 +603,8 @@ export default function TractScoreHeatmapLayer({
           analysisCenterLng={analysisCenterLng}
           analysisRadiusMi={analysisRadiusMi}
           waterIndex={waterIndex}
+          analysisPolygonLatLng={analysisPolygonLatLng}
+          analysisPolygonKey={analysisPolygonKey}
         />
       )}
     </Fragment>

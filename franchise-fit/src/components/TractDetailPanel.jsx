@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Chart } from 'chart.js/auto';
 import { fetchTractHistory, projectFuture } from '../utils/censusApi';
 import { featureAreaSqMi } from '../utils/tractAreaUnits';
+import { formatMedianHomeValueDisplay } from '../utils/censusConstants';
 
 export default function TractDetailPanel({ tract, onClose }) {
   const [loading, setLoading] = useState(false);
@@ -18,7 +19,7 @@ export default function TractDetailPanel({ tract, onClose }) {
     () => [
       { key: 'income', label: 'Median Income', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#2563eb' },
       { key: 'rent', label: 'Median Rent', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#16a34a' },
-      { key: 'homeValue', label: 'Home Value', format: (v) => (v ? `$${Math.round(v).toLocaleString()}` : '—'), color: '#a855f7' },
+      { key: 'homeValue', label: 'Home Value', format: (v) => formatMedianHomeValueDisplay(v), color: '#a855f7' },
       {
         key: 'studentPopulation',
         label: 'Students per sq mi',

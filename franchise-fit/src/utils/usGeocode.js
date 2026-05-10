@@ -15,7 +15,7 @@ async function nominatimSearch(extraParams) {
     if (v != null && String(v).trim() !== "") u.searchParams.set(k, String(v));
   }
   const res = await fetch(u.toString(), {
-    headers: { Accept: "application/json" },
+    headers: nominatimHeaders(),
   });
   if (!res.ok) return [];
   try {
@@ -68,6 +68,56 @@ async function geocodeCensusOneLine(address) {
  * @param {string} address
  * @returns {Promise<{ lat: number, lng: number, displayName: string } | null>}
  */
+const NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse";
+
+/** Minimum spacing between reverse requests (Nominatim usage policy). */
+const NOMINATIM_MIN_INTERVAL_MS = 1100;
+
+function nominatimHeaders() {
+  const id =
+    (typeof import.meta !== "undefined" && import.meta.env?.VITE_NOMINATIM_CONTACT) ||
+    "FranchiseFit/1.0 (local dev; see https://operations.osmfoundation.org/policies/nominatim/)";
+  return {
+    Accept: "application/json",
+    "User-Agent": id,
+  };
+}
+
+let nominatimReverseChain = Promise.resolve();
+
+/**
+ * Reverse geocode a coordinate (Nominatim). Requests run strictly one-after-another + cooldown.
+ * @returns {Promise<{ displayName: string, lat: number, lng: number } | null>}
+ */
+export function reverseGeocodeLatLng(lat, lng) {
+  const la = Number(lat);
+  const ln = Number(lng);
+  if (!Number.isFinite(la) || !Number.isFinite(ln)) return Promise.resolve(null);
+
+  const job = nominatimReverseChain.then(async () => {
+    try {
+      const u = new URL(NOMINATIM_REVERSE);
+      u.searchParams.set("lat", String(la));
+      u.searchParams.set("lon", String(ln));
+      u.searchParams.set("format", "json");
+      u.searchParams.set("addressdetails", "1");
+      u.searchParams.set("zoom", "18");
+      const res = await fetch(u.toString(), { headers: nominatimHeaders() });
+      if (!res.ok) return null;
+      const row = await res.json();
+      const name = row?.display_name?.trim();
+      if (!name) return null;
+      return { displayName: name, lat: la, lng: ln };
+    } catch {
+      return null;
+    } finally {
+      await new Promise((r) => setTimeout(r, NOMINATIM_MIN_INTERVAL_MS));
+    }
+  });
+  nominatimReverseChain = job.catch(() => {});
+  return job;
+}
+
 export async function geocodeUsAddressFreeform(address) {
   const trimmed = address.trim();
   if (!trimmed) return null;

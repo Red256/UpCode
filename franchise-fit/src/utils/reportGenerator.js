@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import { Chart } from 'chart.js/auto';
+import { formatMedianHomeValueDisplay } from './censusConstants';
 
 /** mm — comfortable print margins (jsPDF default unit is mm for A4) */
 const MARGIN = 22;
@@ -848,7 +849,7 @@ export async function generateLocationReport(
         pdf.text(String(row.year), cx[0], ty);
         pdf.text(fmtTrendUsd(row.income), cx[1], ty);
         pdf.text(fmtTrendUsd(row.rent), cx[2], ty);
-        pdf.text(fmtTrendUsd(row.homeValue), cx[3], ty);
+        pdf.text(formatMedianHomeValueDisplay(row.homeValue), cx[3], ty);
         pdf.text(fmtTrendStudentCount(row.studentPopulation), cx[4], ty);
         ty += 4.5;
       });

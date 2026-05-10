@@ -4,7 +4,7 @@
  */
 
 import { fetchTractHeatmapGeoJson } from './tractHeatmap';
-import { ACS_DATASET_YEAR, ACS_HISTORY_YEARS } from './censusConstants';
+import { ACS_DATASET_YEAR, ACS_HISTORY_YEARS, formatMedianHomeValueDisplay } from './censusConstants';
 import { fetchCountyAcsRow } from './offlineData';
 import nationalTractZStats from '../data/nationalTractZStats.json';
 import { scoreStudentRegion } from './studentRegionScore';
@@ -101,7 +101,8 @@ function metricsToRawValues(metrics) {
   return {
     'Median Income': metrics.income != null ? `$${Math.round(metrics.income).toLocaleString()}` : '—',
     'Median Rent': metrics.rent != null ? `$${Math.round(metrics.rent).toLocaleString()}` : '—',
-    'Median Home Value': metrics.homeValue != null ? `$${Math.round(metrics.homeValue).toLocaleString()}` : '—',
+    'Median Home Value':
+      metrics.homeValue != null ? formatMedianHomeValueDisplay(metrics.homeValue) : '—',
     School:
       metrics.studentPopulation != null &&
       metrics.studentRegionAreaSqMi != null &&

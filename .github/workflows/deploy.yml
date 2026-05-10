@@ -1,3 +1,6 @@
+# Live site: https://red256.github.io/PA-UpCode/
+# Repo → Settings → Pages → Build and deployment → Source: GitHub Actions.
+# Optional: add repository Secrets VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY so CI builds match local .env.
 name: Deploy to GitHub Pages
 
 on:
@@ -36,6 +39,9 @@ jobs:
         run: npm ci
 
       - name: Build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Upload artifact

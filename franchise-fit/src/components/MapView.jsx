@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, Circle, CircleMarker, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Circle, CircleMarker, Popup, useMap, Pane } from "react-leaflet";
 import { BEFORE_MAP_CAPTURE, MAP_CAPTURE_ROOT_ID } from "../utils/mapConstants";
 import { FACTOR_DEFAULTS } from "./FactorPanel";
 import { CHOROPLETH_METRIC_WEIGHTED } from "../utils/tractOverallScore";
@@ -41,6 +41,31 @@ function MapInvalidateForCapture() {
   return null;
 }
 
+/** Flex/layout/size changes (panel slide, window resize) require invalidateSize or overlays drift from tiles. */
+function MapInvalidateOnResize() {
+  const map = useMap();
+  useEffect(() => {
+    const el = map.getContainer();
+    let raf = 0;
+    const bump = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        map.invalidateSize({ animate: false });
+      });
+    };
+    const ro = new ResizeObserver(bump);
+    ro.observe(el);
+    window.addEventListener("resize", bump);
+    bump();
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", bump);
+    };
+  }, [map]);
+  return null;
+}
+
 export default function MapView({
   center,
   zoom,
@@ -50,6 +75,8 @@ export default function MapView({
   heatmapLoading = false,
   heatmapError = null,
   factors,
+  recommendationPins = [],
+  onRecommendationPinClick,
   onTractClick,
   eliteScore = false,
   polygon = null,
@@ -65,7 +92,27 @@ export default function MapView({
   onClearPolygon = null,
 }) {
   const meters = milesToMeters(radiusMi);
+  const isFreeDrawing = drawingMode === "building";
   const hasFeatures = heatmapData?.features?.length > 0;
+  const recPins = Array.isArray(recommendationPins) ? recommendationPins : [];
+  /** Single fill for all recommendation pins (rank shown in popup / panel). */
+  const RECOMMENDATION_PIN_FILL = "#22c55e";
+
+  const recommendationPopupTitle = (rec) => {
+    const short = (s) =>
+      s
+        ? s
+            .split(",")
+            .slice(0, 3)
+            .join(",")
+            .trim()
+        : "";
+    if (rec.geocodedLabel) return short(rec.geocodedLabel);
+    if (rec.displayName) return short(rec.displayName);
+    if (!rec.geocodeResolved) return "Looking up address…";
+    return "Address unavailable";
+  };
+
   /** Show either tract polygons (choropleth) or kriging raster — not both. */
   const [tractSurfaceMode, setTractSurfaceMode] = useState(/** @type {'choropleth' | 'kriging'} */ ("choropleth"));
   /** Which score drives fill / kriging colors. */
@@ -74,7 +121,7 @@ export default function MapView({
   return (
     <div
       id={MAP_CAPTURE_ROOT_ID}
-      className={`map-container${eliteScore ? " map-container--elite" : ""}`}
+      className={`map-container${eliteScore ? " map-container--elite" : ""}${isFreeDrawing ? " map-container--free-draw" : ""}`}
     >
       <ShapeToolbar
         center={center}
@@ -128,7 +175,9 @@ export default function MapView({
           >
             {tractSurfaceMode === "choropleth"
               ? "Tract boundaries — click for tract details."
-              : "Interpolated surface from tract scores (search circle, land only)."}
+              : polygon?.length >= 3
+                ? "Interpolated surface inside your custom zone (land only)."
+                : "Interpolated surface from tract scores (search circle, land only)."}
           </div>
         </div>
       )}
@@ -148,6 +197,7 @@ export default function MapView({
         />
         <MapUpdater center={center} zoom={zoom} />
         <MapInvalidateForCapture />
+        <MapInvalidateOnResize />
 
         {!polygon && (
           <Circle
@@ -162,15 +212,6 @@ export default function MapView({
           />
         )}
 
-        <PolygonEditor
-          polygon={polygon}
-          drawingMode={drawingMode}
-          draftPolygon={draftPolygon}
-          onPolygonChange={onPolygonChange}
-          onDraftChange={onDraftChange}
-          onExitDrawing={onExitDrawing}
-        />
-
         {hasFeatures && factors && (
           <TractScoreHeatmapLayer
             data={heatmapData}
@@ -180,22 +221,73 @@ export default function MapView({
             analysisRadiusMi={radiusMi}
             surfaceMode={tractSurfaceMode}
             choroplethMetric={choroplethMetric}
-            disableInteraction={drawingMode === "building"}
+            disableInteraction={isFreeDrawing}
+            analysisPolygonLatLng={polygon}
           />
         )}
 
-        <CircleMarker
-          center={center}
-          radius={7}
-          pathOptions={{
-            color: "#1d4ed8",
-            fillColor: "#ffffff",
-            fillOpacity: 1,
-            weight: 3,
-          }}
-        >
-          {popupText && <Popup>{popupText}</Popup>}
-        </CircleMarker>
+        <PolygonEditor
+          polygon={polygon}
+          drawingMode={drawingMode}
+          draftPolygon={draftPolygon}
+          onPolygonChange={onPolygonChange}
+          onDraftChange={onDraftChange}
+          onExitDrawing={onExitDrawing}
+        />
+
+        {recPins.length > 0 ? (
+          <Pane name="frFitRecommendationPins" style={{ zIndex: 640 }}>
+            {recPins.map((rec) => {
+              const lon = rec.lon ?? rec.lng;
+              if (rec.lat == null || lon == null || Number.isNaN(rec.lat) || Number.isNaN(lon)) return null;
+              return (
+                <CircleMarker
+                  key={`rec-pin-${rec.rank}-${rec.lat}-${lon}`}
+                  center={[rec.lat, lon]}
+                  radius={10}
+                  interactive={!isFreeDrawing}
+                  pathOptions={{
+                    color: "#0f172a",
+                    weight: 2,
+                    fillColor: RECOMMENDATION_PIN_FILL,
+                    fillOpacity: 0.92,
+                  }}
+                  eventHandlers={{
+                    click: () => {
+                      if (!isFreeDrawing && onRecommendationPinClick) onRecommendationPinClick(rec);
+                    },
+                  }}
+                >
+                  <Popup>
+                    <div className="rec-map-popup">
+                      <div className="rec-map-popup-rank">Recommendation #{rec.rank}</div>
+                      <div className="rec-map-popup-place">{recommendationPopupTitle(rec)}</div>
+                      {rec.score != null && !Number.isNaN(Number(rec.score)) && (
+                        <div className="rec-map-popup-score">Score {Math.round(Number(rec.score))}/100</div>
+                      )}
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              );
+            })}
+          </Pane>
+        ) : null}
+
+        <Pane name="frFitAnalysisCenterPin" style={{ zIndex: 650 }}>
+          <CircleMarker
+            center={center}
+            radius={7}
+            interactive={!isFreeDrawing}
+            pathOptions={{
+              color: "#1d4ed8",
+              fillColor: "#ffffff",
+              fillOpacity: 1,
+              weight: 3,
+            }}
+          >
+            {popupText && <Popup>{popupText}</Popup>}
+          </CircleMarker>
+        </Pane>
       </MapContainer>
 
       {(heatmapLoading || heatmapError) && (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useLayoutEffect } from "react";
 import { Polygon, Marker, Polyline, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import {
@@ -35,29 +35,40 @@ const DRAW_STYLE = {
   dashArray: "6 6",
 };
 
+/** Above default marker pane (600), below tooltips (650) — reliable clicks over choropleth SVG */
+const POLYGON_HANDLES_PANE = "polygonHandles";
+
 const VERTEX_ICON = L.divIcon({
   html: `<div style="
+    width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+    pointer-events:auto;
+  "><div style="
     width:14px;height:14px;border-radius:50%;
     background:#fff;border:2.5px solid #2563eb;
     box-shadow:0 1px 4px rgba(0,0,0,0.18);
     cursor:grab;
-  "></div>`,
+    pointer-events:auto;
+  "></div></div>`,
   className: "polygon-vertex",
-  iconSize: [14, 14],
-  iconAnchor: [7, 7],
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
 });
 
 const MIDPOINT_ICON = L.divIcon({
   html: `<div style="
+    width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+    pointer-events:auto;
+  "><div style="
     width:10px;height:10px;border-radius:50%;
     background:rgba(37,99,235,0.45);
     border:1.5px solid #fff;
     box-shadow:0 1px 3px rgba(0,0,0,0.15);
     cursor:copy;
-  "></div>`,
+    pointer-events:auto;
+  "></div></div>`,
   className: "polygon-midpoint",
-  iconSize: [10, 10],
-  iconAnchor: [5, 5],
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
 });
 
 function DrawHandler({ active, onAddPoint, onFinish }) {
@@ -90,6 +101,15 @@ export default function PolygonEditor({
   const isDrawing = drawingMode === "building";
 
   const map = useMap();
+
+  useLayoutEffect(() => {
+    if (!map.getPane(POLYGON_HANDLES_PANE)) {
+      const pane = map.createPane(POLYGON_HANDLES_PANE);
+      pane.style.zIndex = "660";
+      pane.style.pointerEvents = "auto";
+    }
+  }, [map]);
+
   useEffect(() => {
     if (!map) return;
     if (isDrawing) {
@@ -130,6 +150,8 @@ export default function PolygonEditor({
           <Marker
             key={`v-${i}`}
             position={vertex}
+            pane={POLYGON_HANDLES_PANE}
+            zIndexOffset={800}
             icon={VERTEX_ICON}
             draggable
             eventHandlers={{
@@ -153,9 +175,17 @@ export default function PolygonEditor({
           <Marker
             key={`mid-${index}`}
             position={latLng}
+            pane={POLYGON_HANDLES_PANE}
+            zIndexOffset={900}
             icon={MIDPOINT_ICON}
             interactive
             eventHandlers={{
+              mousedown: (e) => {
+                L.DomEvent.stop(e.originalEvent);
+              },
+              touchstart: (e) => {
+                L.DomEvent.stop(e.originalEvent);
+              },
               click: (e) => {
                 L.DomEvent.stop(e.originalEvent);
                 onPolygonChange(insertVertex(polygon, index, latLng));
