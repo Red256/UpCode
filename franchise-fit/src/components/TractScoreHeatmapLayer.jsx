@@ -301,8 +301,6 @@ export default function TractScoreHeatmapLayer({
   }, [analysisPolygonLatLng]);
 
   const [waterFc, setWaterFc] = useState(() => ({ type: "FeatureCollection", features: [] }));
-  /** False until OSM water fetch settles — avoids painting land styling then flipping after mask loads. */
-  const [waterResolved, setWaterResolved] = useState(false);
 
   const onTractClickRef = useRef(onTractClick);
   const factorsRef = useRef(factors);
@@ -354,12 +352,13 @@ export default function TractScoreHeatmapLayer({
     ) {
       queueMicrotask(() => {
         setWaterFc({ type: "FeatureCollection", features: [] });
-        setWaterResolved(true);
       });
       return;
     }
     let cancelled = false;
-    queueMicrotask(() => setWaterResolved(false));
+    queueMicrotask(() => {
+      setWaterFc({ type: "FeatureCollection", features: [] });
+    });
 
     let south;
     let west;
@@ -384,13 +383,11 @@ export default function TractScoreHeatmapLayer({
       .then((fc) => {
         if (!cancelled) {
           setWaterFc(fc ?? { type: "FeatureCollection", features: [] });
-          setWaterResolved(true);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setWaterFc({ type: "FeatureCollection", features: [] });
-          setWaterResolved(true);
         }
       });
     return () => {
@@ -425,6 +422,20 @@ export default function TractScoreHeatmapLayer({
       }
       const mapScore = scoreForChoroplethMetric(choroplethMetric, factors, feature.properties.scores);
       const onWater = waterIndex.length > 0 && tractShouldMaskWater(feature, waterIndex);
+      
+      // Show loading state with visible neutral color when scores aren't loaded yet
+      const isLoadingScores = mapScore == null || Number.isNaN(mapScore);
+      
+      if (isLoadingScores && !onWater) {
+        return {
+          fillColor: "#94a3b8",
+          fillOpacity: 0.25,
+          color: "rgba(100,116,139,0.4)",
+          weight: 0.5,
+          opacity: 0.7,
+        };
+      }
+      
       return {
         fillColor: colorForHeatmapScore(mapScore),
         fillOpacity: onWater ? 0 : 0.34,
@@ -583,13 +594,12 @@ export default function TractScoreHeatmapLayer({
   );
 
   if (!items.length) return null;
-  if (!waterResolved) return null;
 
   return (
     <Fragment>
       {choroplethData && (
         <GeoJSON
-          key={disableInteraction ? "tract-choro-no-pointer" : "tract-choro-pointer"}
+          key={`tract-choro-${disableInteraction ? "no-pointer" : "pointer"}-${data?.partial ? "partial" : "full"}-${data?.loadGen || 0}`}
           data={choroplethData}
           style={tractChoroplethStyle}
           interactive={!disableInteraction}

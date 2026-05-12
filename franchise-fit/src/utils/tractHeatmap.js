@@ -158,38 +158,44 @@ async function fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, 
   const pageSize = 2000;
   let offset = 0;
   const all = [];
+  const ac = new AbortController();
+  const tid = setTimeout(() => ac.abort(), 55_000);
 
-  for (;;) {
-    const params = new URLSearchParams({
-      where: '1=1',
-      geometry: `${xmin},${ymin},${xmax},${ymax}`,
-      geometryType: 'esriGeometryEnvelope',
-      inSR: '4326',
-      spatialRel: 'esriSpatialRelIntersects',
-      outFields: TIGER_OUT_FIELDS,
-      returnGeometry: 'true',
-      outSR: '4326',
-      f: 'geojson',
-      resultRecordCount: String(pageSize),
-      resultOffset: String(offset),
-    });
+  try {
+    for (;;) {
+      const params = new URLSearchParams({
+        where: '1=1',
+        geometry: `${xmin},${ymin},${xmax},${ymax}`,
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        spatialRel: 'esriSpatialRelIntersects',
+        outFields: TIGER_OUT_FIELDS,
+        returnGeometry: 'true',
+        outSR: '4326',
+        f: 'geojson',
+        resultRecordCount: String(pageSize),
+        resultOffset: String(offset),
+      });
 
-    const res = await fetch(`${layerUrl}?${params.toString()}`);
-    if (!res.ok) return [];
-    const gj = await res.json();
-    const feats = gj.features || [];
-    all.push(...feats);
+      const res = await fetch(`${layerUrl}?${params.toString()}`, { signal: ac.signal });
+      if (!res.ok) return [];
+      const gj = await res.json();
+      const feats = gj.features || [];
+      all.push(...feats);
 
-    const exceeded =
-      gj.properties?.exceededTransferLimit === true ||
-      gj.exceededTransferLimit === true;
+      const exceeded =
+        gj.properties?.exceededTransferLimit === true ||
+        gj.exceededTransferLimit === true;
 
-    if (!exceeded || feats.length === 0) break;
-    offset += feats.length;
-    if (offset > 80000) break;
+      if (!exceeded || feats.length === 0) break;
+      offset += feats.length;
+      if (offset > 80000) break;
+    }
+
+    return all;
+  } finally {
+    clearTimeout(tid);
   }
-
-  return all;
 }
 
 function normalizeGeoidFromFeature(f) {
@@ -212,7 +218,12 @@ function normalizeGeoidFromFeature(f) {
   if (geoid && geoid.length >= 11) f.properties.geoid = geoid;
 }
 
-export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles, polygonLatLng = null) {
+/**
+ * @param {import('geojson').Polygon['coordinates'][0] | null} [polygonLatLng] - [[lat,lng], ...] ring
+ * @param {{ onProgress?: (fc: import('geojson').FeatureCollection & { partial?: boolean; radiusMiles?: number; areaScoreSummary?: object }) => void }} [fetchOptions]
+ */
+export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles, polygonLatLng = null, fetchOptions = {}) {
+  const { onProgress } = fetchOptions;
   if (!isUsApprox(centerLat, centerLng)) {
     throw new Error('Tract heatmap is only available for locations in the United States.');
   }
@@ -271,12 +282,15 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
   // If no local features, try TIGERweb API (online fallback)
   if (!features.length) {
     const [xmin, ymin, xmax, ymax] = queryEnv;
-    for (const layerUrl of TIGER_TRACT_LAYERS) {
-      try {
-        features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
-        if (features.length) break;
-      } catch {
-        /* try next layer */
+    for (let attempt = 0; attempt < 2 && !features.length; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 450));
+      for (const layerUrl of TIGER_TRACT_LAYERS) {
+        try {
+          features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
+          if (features.length) break;
+        } catch {
+          /* try next layer / retry */
+        }
       }
     }
   }
@@ -328,8 +342,6 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     if (st != null) stateSet.add(String(st).padStart(2, '0'));
   }
 
-  const lookup = await loadTractScoreLookup(stateSet);
-
   const emptyRaw = () => ({
     income: null,
     rent: null,
@@ -346,21 +358,62 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     studentPopulation: null,
   });
 
-  for (const f of filtered) {
-    const gid = f.properties.geoid;
-    const entry = gid && lookup[gid] ? lookup[gid] : null;
-    if (entry?.raw && entry?.scores) {
-      f.properties.raw = {
-        ...entry.raw,
-        name: entry.raw.name || f.properties.NAME,
-      };
-      f.properties.scores = { ...entry.scores };
-      if (entry.centroid?.lat != null && entry.centroid?.lng != null) {
-        f.properties.centroid = { lat: entry.centroid.lat, lng: entry.centroid.lng };
-      }
-    } else {
+  if (onProgress && filtered.length > 0) {
+    for (const f of filtered) {
       f.properties.raw = { ...emptyRaw(), name: f.properties.NAME };
       f.properties.scores = emptyScores();
+    }
+    // Use setTimeout to ensure the partial update is processed before continuing
+    await new Promise(resolve => setTimeout(resolve, 0));
+    onProgress({
+      type: 'FeatureCollection',
+      features: filtered,
+      radiusMiles: Number(radiusMiles) || 0,
+      partial: true,
+      loadGen: Date.now(), // Add generation marker for React key
+    });
+    // Give the UI time to render the partial data
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+
+  const lookup = await loadTractScoreLookup(stateSet);
+
+  // Process features in chunks to avoid blocking the UI
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < filtered.length; i += CHUNK_SIZE) {
+    const chunk = filtered.slice(i, i + CHUNK_SIZE);
+    for (const f of chunk) {
+      const gid = f.properties.geoid;
+      const entry = gid && lookup[gid] ? lookup[gid] : null;
+      if (entry?.raw && entry?.scores) {
+        f.properties.raw = {
+          ...entry.raw,
+          name: entry.raw.name || f.properties.NAME,
+        };
+        f.properties.scores = { ...entry.scores };
+        if (entry.centroid?.lat != null && entry.centroid?.lng != null) {
+          f.properties.centroid = { lat: entry.centroid.lat, lng: entry.centroid.lng };
+        }
+      } else {
+        f.properties.raw = { ...emptyRaw(), name: f.properties.NAME };
+        f.properties.scores = emptyScores();
+      }
+    }
+    
+    // Send progressive update every 2 chunks (about 100 tracts)
+    if (onProgress && i > 0 && i % (CHUNK_SIZE * 2) === 0 && i + CHUNK_SIZE < filtered.length) {
+      onProgress({
+        type: 'FeatureCollection',
+        features: filtered,
+        radiusMiles: Number(radiusMiles) || 0,
+        partial: true,
+        loadGen: Date.now(), // Add generation marker for React key
+      });
+    }
+    
+    // Yield control to the browser every chunk
+    if (i + CHUNK_SIZE < filtered.length) {
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
 
@@ -468,6 +521,7 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     features: filtered,
     radiusMiles: Number(radiusMiles) || 0,
     areaScoreSummary,
+    loadGen: Date.now(), // Add generation marker for React key
   };
 }
 

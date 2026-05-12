@@ -290,9 +290,13 @@ export default function MapView({
         </Pane>
       </MapContainer>
 
-      {(heatmapLoading || heatmapError) && (
+      {(heatmapLoading || heatmapError || (heatmapLoading && heatmapData?.partial)) && (
         <div className="heatmap-overlay" aria-live="polite">
-          {heatmapLoading && <span className="heatmap-loading">Loading tract data…</span>}
+          {heatmapLoading && heatmapData?.partial ? (
+            <span className="heatmap-loading">Loading census scores…</span>
+          ) : heatmapLoading ? (
+            <span className="heatmap-loading">Loading tract boundaries…</span>
+          ) : null}
           {heatmapError && <span className="heatmap-error">{heatmapError}</span>}
         </div>
       )}

@@ -131,19 +131,27 @@ export default function App() {
     }
     let cancelled = false;
     setHeatmapError(null);
+    setHeatmapGeoJson(null); // Clear old data immediately
     (async () => {
       setHeatmapLoading(true);
       try {
-        const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi, polygon);
+        const fc = await fetchTractHeatmapGeoJson(center[0], center[1], radiusMi, polygon, {
+          onProgress: (partial) => {
+            if (cancelled || seq !== heatmapFetchSeqRef.current) return;
+            setHeatmapGeoJson(partial);
+            // Keep loading state true during partial load
+          },
+        });
         if (cancelled || seq !== heatmapFetchSeqRef.current) return;
         setHeatmapGeoJson(fc);
         setHeatmapError(null);
       } catch (err) {
         console.error("Tract heatmap load error:", err);
         if (!cancelled && seq === heatmapFetchSeqRef.current) {
-          // Don't show error, just use empty collection so app remains usable
           setHeatmapGeoJson({ type: "FeatureCollection", features: [] });
-          setHeatmapError(null);
+          setHeatmapError(
+            "Tract map could not be loaded. Check your connection or try again in a moment.",
+          );
         }
       } finally {
         if (!cancelled && seq === heatmapFetchSeqRef.current) {

@@ -123,14 +123,24 @@ function cacheKey(south, west, north, east) {
   return [south.toFixed(4), west.toFixed(4), north.toFixed(4), east.toFixed(4)].join(",");
 }
 
+/** Client cap: Overpass uses [timeout:25]; abort the browser request if it stalls (avoids a blank map forever). */
+const OVERPASS_FETCH_MS = 32_000;
+
 async function postOverpass(url, query) {
-  const res = await fetch(url, {
-    method: "POST",
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-  });
-  if (!res.ok) throw new Error(`overpass ${res.status}`);
-  return res.json();
+  const ac = new AbortController();
+  const tid = setTimeout(() => ac.abort(), OVERPASS_FETCH_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      body: `data=${encodeURIComponent(query)}`,
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      signal: ac.signal,
+    });
+    if (!res.ok) throw new Error(`overpass ${res.status}`);
+    return res.json();
+  } finally {
+    clearTimeout(tid);
+  }
 }
 
 /** Bbox around the analysis circle (pad slightly past tract + kriging extent). */
