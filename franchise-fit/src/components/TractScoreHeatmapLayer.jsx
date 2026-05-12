@@ -397,17 +397,20 @@ export default function TractScoreHeatmapLayer({
 
   const waterIndex = useMemo(() => prepWaterIndex(waterFc), [waterFc]);
 
-  /** Census tract polygons — score fill (choropleth) + click / popup on the polygon. */
+  /** Census tract polygons — score fill (choropleth) + click / popup on the polygon. Water tracts omitted once OSM index loads. */
   const choroplethData = useMemo(() => {
     if (!data?.features?.length) return null;
-    const features = data.features.filter(
+    let features = data.features.filter(
       (f) =>
         f.geometry &&
         (f.geometry.type === "Polygon" || f.geometry.type === "MultiPolygon"),
     );
+    if (waterIndex.length > 0) {
+      features = features.filter((f) => !tractShouldMaskWater(f, waterIndex));
+    }
     if (!features.length) return null;
     return { type: "FeatureCollection", features };
-  }, [data]);
+  }, [data, waterIndex]);
 
   const tractChoroplethStyle = useCallback(
     (feature) => {
@@ -421,12 +424,10 @@ export default function TractScoreHeatmapLayer({
         };
       }
       const mapScore = scoreForChoroplethMetric(choroplethMetric, factors, feature.properties.scores);
-      const onWater = waterIndex.length > 0 && tractShouldMaskWater(feature, waterIndex);
-      
-      // Show loading state with visible neutral color when scores aren't loaded yet
+
       const isLoadingScores = mapScore == null || Number.isNaN(mapScore);
-      
-      if (isLoadingScores && !onWater) {
+
+      if (isLoadingScores) {
         return {
           fillColor: "#94a3b8",
           fillOpacity: 0.25,
@@ -435,16 +436,16 @@ export default function TractScoreHeatmapLayer({
           opacity: 0.7,
         };
       }
-      
+
       return {
         fillColor: colorForHeatmapScore(mapScore),
-        fillOpacity: onWater ? 0 : 0.34,
-        color: onWater ? "rgba(51,65,85,0.22)" : "rgba(30,41,59,0.55)",
+        fillOpacity: 0.34,
+        color: "rgba(30,41,59,0.55)",
         weight: 0.75,
-        opacity: onWater ? 0.3 : 0.9,
+        opacity: 0.9,
       };
     },
-    [factors, waterIndex, surfaceMode, choroplethMetric],
+    [factors, surfaceMode, choroplethMetric],
   );
 
   useEffect(() => {
@@ -472,6 +473,7 @@ export default function TractScoreHeatmapLayer({
     const out = [];
     for (const f of data.features) {
       if (!f.geometry) continue;
+      if (waterIndex.length > 0 && tractShouldMaskWater(f, waterIndex)) continue;
       try {
         const pre = f.properties.centroid;
         let lat;
@@ -490,7 +492,7 @@ export default function TractScoreHeatmapLayer({
       }
     }
     return out;
-  }, [data, factors, choroplethMetric]);
+  }, [data, factors, choroplethMetric, waterIndex]);
 
   const renderPopupBody = useCallback((feature, weightedOverall, mapMetric, mapScore) => {
     const r = feature.properties.raw || {};
@@ -532,14 +534,6 @@ export default function TractScoreHeatmapLayer({
   const onEachTractFeature = useCallback(
     (feature, layer) => {
       layer._tractHoverFeature = feature;
-
-      if (tractShouldMaskWater(feature, waterIndex)) {
-        layer.options.interactive = false;
-        layer.on("remove", () => {
-          if (hoveredChoroplethLayerRef.current === layer) hoveredChoroplethLayerRef.current = null;
-        });
-        return;
-      }
 
       const wrap = document.createElement("div");
       layer.bindPopup(wrap, { maxWidth: 520, minWidth: 340, className: "tract-leaflet-popup" });
@@ -590,7 +584,7 @@ export default function TractScoreHeatmapLayer({
         }
       });
     },
-    [renderPopupBody, waterIndex],
+    [renderPopupBody],
   );
 
   if (!items.length) return null;
