@@ -6,6 +6,7 @@
 const NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";
 
 async function nominatimSearch(extraParams) {
+  console.count("nominatimSearch");
   const u = new URL(NOMINATIM_SEARCH);
   u.searchParams.set("format", "json");
   u.searchParams.set("limit", "8");
@@ -90,6 +91,7 @@ let nominatimReverseChain = Promise.resolve();
  * @returns {Promise<{ displayName: string, lat: number, lng: number } | null>}
  */
 export function reverseGeocodeLatLng(lat, lng) {
+  console.count("reverseGeocodeLatLng");
   const la = Number(lat);
   const ln = Number(lng);
   if (!Number.isFinite(la) || !Number.isFinite(ln)) return Promise.resolve(null);

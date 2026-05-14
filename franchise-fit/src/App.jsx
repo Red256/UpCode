@@ -103,6 +103,7 @@ export default function App() {
   const [celebrationBurst, setCelebrationBurst] = useState(0);
   const eliteConfettiPlayedRef = useRef(false);
   const [toastVisible, setToastVisible] = useState(false);
+  const [analysisLocked, setAnalysisLocked] = useState(false);
   const prevAnalyzedRef = useRef(false);
   /** Side panel: analysis controls vs ranked recommendations (same scoring pipeline). */
   const [resultView, setResultView] = useState(/** @type {'analysis' | 'recommendations'} */ ("analysis"));
@@ -119,6 +120,10 @@ export default function App() {
     }
     prevAnalyzedRef.current = analyzed;
   }, [analyzed]);
+
+  const markAnalysisStale = useCallback(() => {
+    setAnalysisLocked(false);
+  }, []);
 
   /** Load tract features whenever the map center / radius / polygon changes (default view included). */
   useEffect(() => {
@@ -179,17 +184,19 @@ export default function App() {
   }, []);
 
   const handleSelectShape = useCallback((newPolygon) => {
+    markAnalysisStale();
     setPolygon(newPolygon);
     setDrawingMode(null);
     setDraftPolygon(null);
     setHeatmapLoadGeneration((g) => g + 1);
-  }, []);
+  }, [markAnalysisStale]);
 
   /** New pin / address → drop custom polygon so analysis matches default search circle */
   const resetCustomShapeSelection = useCallback(() => {
     setPolygon(null);
     setDrawingMode(null);
     setDraftPolygon(null);
+    markAnalysisStale();
   }, []);
 
   const handleStartFreeDraw = useCallback(() => {
@@ -205,26 +212,30 @@ export default function App() {
 
   const handleFinishDrawing = useCallback(() => {
     if (draftPolygon && draftPolygon.length >= 3) {
+      markAnalysisStale();
       setPolygon(draftPolygon);
       setHeatmapLoadGeneration((g) => g + 1);
     }
     setDrawingMode(null);
     setDraftPolygon(null);
-  }, [draftPolygon]);
+  }, [draftPolygon, markAnalysisStale]);
 
   const handlePolygonChange = useCallback((newPolygon) => {
+    markAnalysisStale();
     setPolygon(newPolygon);
     setHeatmapLoadGeneration((g) => g + 1);
-  }, []);
+  }, [markAnalysisStale]);
 
   const handleClearPolygon = useCallback(() => {
+    markAnalysisStale();
     setPolygon(null);
     setDrawingMode(null);
     setDraftPolygon(null);
     setHeatmapLoadGeneration((g) => g + 1);
-  }, []);
+  }, [markAnalysisStale]);
 
   const handleSelect = async (item) => {
+    markAnalysisStale();
     resetCustomShapeSelection();
     setSuggestions([]);
     setSuggestionsLoading(false);
@@ -242,6 +253,11 @@ export default function App() {
     setCenter([Number(lat), Number(lng)]);
     setHeatmapLoadGeneration((g) => g + 1);
   };
+
+  const handleRadiusChange = useCallback((nextRadiusMi) => {
+    markAnalysisStale();
+    setRadiusMi(nextRadiusMi);
+  }, [markAnalysisStale]);
 
   const handleAnalyze = async () => {
     const enabled = Object.entries(factors).filter(([, f]) => f.enabled);
@@ -333,6 +349,7 @@ export default function App() {
         projection,
       });
       setAnalyzed(true);
+      setAnalysisLocked(true);
       if (weightedResult.overall >= 85 && !eliteConfettiPlayedRef.current) {
         eliteConfettiPlayedRef.current = true;
         setCelebrationBurst((n) => n + 1);
@@ -545,6 +562,7 @@ export default function App() {
             <AddressInput
               value={location}
               onChange={(val) => {
+                markAnalysisStale();
                 setLocation(val);
                 if (!val.trim()) setLocationSet(false);
               }}
@@ -552,7 +570,7 @@ export default function App() {
             />
             <select
               value={radiusMi}
-              onChange={(e) => setRadiusMi(Number(e.target.value))}
+              onChange={(e) => handleRadiusChange(Number(e.target.value))}
             >
               <option value={3}>3 mi</option>
               <option value={5}>5 mi</option>
@@ -582,7 +600,7 @@ export default function App() {
           <button
             className="save-btn analyze-btn"
             onClick={handleAnalyze}
-            disabled={enabledCount === 0 || analyzing}
+            disabled={enabledCount === 0 || analyzing || analysisLocked}
           >
             {analyzing ? (
               <>
