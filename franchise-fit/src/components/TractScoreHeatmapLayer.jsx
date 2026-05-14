@@ -24,7 +24,11 @@ import { pointInPolygon, polygonBbox } from "../utils/polygon";
 const GRID_COLS = 72;
 const GRID_ROWS = 54;
 const UPSCALE = 3;
-const DEBOUNCE_MS = 200;
+const MAP_MOVE_DEBOUNCE_MS = 200;
+/** Coalesce rapid factor / metric changes so IDW work does not freeze the address bar. */
+const KRIGING_ITEMS_DEBOUNCE_MS = 120;
+/** Paint a few grid rows per frame so the main thread can handle input + fetch. */
+const KRIGING_ROWS_PER_FRAME = 10;
 /** IDW power — 2 Shepard; higher = sharper near tract boundaries. */
 const IDW_POWER = 2;
 
@@ -126,10 +130,15 @@ function TractKrigingRaster({
 }) {
   const map = useMap();
   const overlayRef = useRef(null);
-  const debounceRef = useRef(null);
+  const moveDebounceRef = useRef(null);
+  const itemsDebounceRef = useRef(null);
+  const rafRef = useRef(0);
+  const krigingRunGenRef = useRef(0);
 
   useEffect(() => {
     if (!map) return;
+
+    let cancelled = false;
 
     const clearOverlay = () => {
       if (overlayRef.current) {
@@ -150,6 +159,10 @@ function TractKrigingRaster({
     }
 
     const run = () => {
+      if (cancelled) return;
+      const runGen = ++krigingRunGenRef.current;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
       clearOverlay();
 
       const bounds = map.getBounds();
@@ -210,66 +223,93 @@ function TractKrigingRaster({
       const sctx = src.getContext("2d");
       const img = sctx.createImageData(cols, rows);
 
-      for (let j = 0; j < rows; j++) {
-        for (let i = 0; i < cols; i++) {
-          const lng = west + (i + 0.5) * dLng;
-          const lat = north - (j + 0.5) * dLat;
-          const ix = (j * cols + i) * 4;
-          if (!cellInZone(lat, lng)) {
-            img.data[ix + 3] = 0;
-            continue;
+      let row = 0;
+      const paintChunk = () => {
+        if (cancelled || runGen !== krigingRunGenRef.current) return;
+        const end = Math.min(row + KRIGING_ROWS_PER_FRAME, rows);
+        for (let j = row; j < end; j++) {
+          for (let i = 0; i < cols; i++) {
+            const lng = west + (i + 0.5) * dLng;
+            const lat = north - (j + 0.5) * dLat;
+            const ix = (j * cols + i) * 4;
+            if (!cellInZone(lat, lng)) {
+              img.data[ix + 3] = 0;
+              continue;
+            }
+            if (waterIndex?.length && lngLatInWater(lng, lat, waterIndex)) {
+              img.data[ix + 3] = 0;
+              continue;
+            }
+            const [px, py] = projectKrigXY(lng, lat, lat0);
+            const zRaw = idwScoreAt(px, py, projectedSamples, IDW_POWER);
+            if (!Number.isFinite(zRaw)) {
+              img.data[ix + 3] = 0;
+              continue;
+            }
+            const z = Math.max(0, Math.min(100, zRaw));
+            const [r, g, b, a] = scoreToRgba(z, HEATMAP_COLOR_LO, HEATMAP_COLOR_HI);
+            img.data[ix] = r;
+            img.data[ix + 1] = g;
+            img.data[ix + 2] = b;
+            img.data[ix + 3] = a;
           }
-          if (waterIndex?.length && lngLatInWater(lng, lat, waterIndex)) {
-            img.data[ix + 3] = 0;
-            continue;
-          }
-          const [px, py] = projectKrigXY(lng, lat, lat0);
-          const zRaw = idwScoreAt(px, py, projectedSamples, IDW_POWER);
-          if (!Number.isFinite(zRaw)) {
-            img.data[ix + 3] = 0;
-            continue;
-          }
-          const z = Math.max(0, Math.min(100, zRaw));
-          const [r, g, b, a] = scoreToRgba(z, HEATMAP_COLOR_LO, HEATMAP_COLOR_HI);
-          img.data[ix] = r;
-          img.data[ix + 1] = g;
-          img.data[ix + 2] = b;
-          img.data[ix + 3] = a;
         }
-      }
-      sctx.putImageData(img, 0, 0);
+        row = end;
+        if (row < rows) {
+          rafRef.current = requestAnimationFrame(paintChunk);
+          return;
+        }
+        rafRef.current = 0;
+        if (cancelled || runGen !== krigingRunGenRef.current) return;
+        sctx.putImageData(img, 0, 0);
 
-      const out = document.createElement("canvas");
-      out.width = cols * UPSCALE;
-      out.height = rows * UPSCALE;
-      const octx = out.getContext("2d");
-      octx.imageSmoothingEnabled = true;
-      octx.imageSmoothingQuality = "high";
-      octx.drawImage(src, 0, 0, out.width, out.height);
+        const out = document.createElement("canvas");
+        out.width = cols * UPSCALE;
+        out.height = rows * UPSCALE;
+        const octx = out.getContext("2d");
+        octx.imageSmoothingEnabled = true;
+        octx.imageSmoothingQuality = "high";
+        octx.drawImage(src, 0, 0, out.width, out.height);
 
-      const overlay = L.imageOverlay(out.toDataURL("image/png"), [[south, west], [north, east]], {
-        opacity: 0.8,
-        interactive: false,
-      });
-      overlay.addTo(map);
-      const el = overlay.getElement?.();
-      if (el) {
-        el.style.pointerEvents = "none";
-        el.style.zIndex = "380";
-      }
-      overlayRef.current = overlay;
+        const overlay = L.imageOverlay(out.toDataURL("image/png"), [[south, west], [north, east]], {
+          opacity: 0.8,
+          interactive: false,
+        });
+        overlay.addTo(map);
+        const el = overlay.getElement?.();
+        if (el) {
+          el.style.pointerEvents = "none";
+          el.style.zIndex = "380";
+        }
+        overlayRef.current = overlay;
+      };
+
+      rafRef.current = requestAnimationFrame(paintChunk);
     };
 
-    const schedule = () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(run, DEBOUNCE_MS);
+    const schedulePan = () => {
+      if (moveDebounceRef.current) clearTimeout(moveDebounceRef.current);
+      moveDebounceRef.current = setTimeout(() => {
+        moveDebounceRef.current = null;
+        run();
+      }, MAP_MOVE_DEBOUNCE_MS);
     };
 
-    run();
-    map.on("moveend", schedule);
+    if (itemsDebounceRef.current) clearTimeout(itemsDebounceRef.current);
+    itemsDebounceRef.current = setTimeout(() => {
+      itemsDebounceRef.current = null;
+      run();
+    }, KRIGING_ITEMS_DEBOUNCE_MS);
+
+    map.on("moveend", schedulePan);
     return () => {
-      map.off("moveend", schedule);
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      cancelled = true;
+      krigingRunGenRef.current += 1;
+      map.off("moveend", schedulePan);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+      if (moveDebounceRef.current) clearTimeout(moveDebounceRef.current);
+      if (itemsDebounceRef.current) clearTimeout(itemsDebounceRef.current);
       if (overlayRef.current) {
         map.removeLayer(overlayRef.current);
         overlayRef.current = null;

@@ -25,7 +25,7 @@ let AREA_MAP = {};
 try {
   AREA_MAP = JSON.parse(readFileSync(join(ROOT, 'src/data/tractGeoidAreaSqMi.json'), 'utf8'));
 } catch {
-  console.warn('tractGeoidAreaSqMi.json missing — run node scripts/buildTractGeoidAreaSqMi.mjs (School uses count z-score fallback)');
+  console.warn('tractGeoidAreaSqMi.json missing — run node scripts/buildTractGeoidAreaSqMi.mjs (student density uses count z-score fallback)');
 }
 
 const YEAR = NATIONAL.acsYear || '2024';

@@ -1,39 +1,45 @@
 import { useState, useEffect, useRef, startTransition } from "react";
 import { useDebounce } from "./useDebounce";
+import { HttpRateLimitError, isHttpRateLimitError } from "../utils/httpErrors";
+import { nominatimSearch } from "../utils/usGeocode";
+
+/** Nominatim policy: max ~1 req/s; debounce + client cache reduce bursts. */
+const NOMINATIM_DEBOUNCE_MS = 550;
+
+const RATE_MSG =
+  "Address search is rate limited. Wait a minute, then try again.";
 
 export function useAutocomplete(query) {
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
-  const debouncedQuery = useDebounce(query, 300);
-  const abortRef = useRef(null);
+  const [error, setError] = useState(/** @type {string | null} */ (null));
+  const debouncedQuery = useDebounce(query, NOMINATIM_DEBOUNCE_MS);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
+    const requestId = ++requestIdRef.current;
+
     if (!debouncedQuery || debouncedQuery.length < 2) {
       startTransition(() => {
+        if (requestId !== requestIdRef.current) return;
         setSuggestions([]);
         setLoading(false);
+        setError(null);
       });
       return;
     }
 
-    startTransition(() => setLoading(true));
+    startTransition(() => {
+      if (requestId !== requestIdRef.current) return;
+      setLoading(true);
+      setError(null);
+    });
 
-    if (abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const url =
-      "https://nominatim.openstreetmap.org/search?format=json&limit=5&addressdetails=1&countrycodes=us&q=" +
-      encodeURIComponent(debouncedQuery);
-
-    fetch(url, {
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    })
-      .then((res) => res.json())
+    nominatimSearch({ q: debouncedQuery, limit: "5" })
       .then((data) => {
-        const items = (data || []).map((item) => {
-          const parts = item.display_name.split(", ");
+        if (requestId !== requestIdRef.current) return;
+        const items = (Array.isArray(data) ? data : []).map((item) => {
+          const parts = String(item.display_name || "").split(", ");
           return {
             primary: parts.slice(0, 2).join(", "),
             secondary: parts.slice(2).join(", "),
@@ -44,17 +50,21 @@ export function useAutocomplete(query) {
           };
         });
         setSuggestions(items);
-        setLoading(false);
       })
       .catch((err) => {
-        if (err.name !== "AbortError") {
-          setSuggestions([]);
-          setLoading(false);
+        if (requestId !== requestIdRef.current) return;
+        setSuggestions([]);
+        if (isHttpRateLimitError(err)) {
+          setError(err instanceof HttpRateLimitError ? err.message : RATE_MSG);
+        } else {
+          setError(null);
         }
+      })
+      .finally(() => {
+        if (requestId !== requestIdRef.current) return;
+        setLoading(false);
       });
-
-    return () => controller.abort();
   }, [debouncedQuery]);
 
-  return { suggestions, loading };
+  return { suggestions, loading, error };
 }

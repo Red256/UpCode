@@ -6,11 +6,11 @@ export default function AddressInput({ value, onChange, onSelect }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [dropdownPlacement, setDropdownPlacement] = useState(null);
-  const { suggestions, loading } = useAutocomplete(value);
+  const { suggestions, loading, error } = useAutocomplete(value);
   const wrapRef = useRef(null);
   const dropdownRef = useRef(null);
 
-  const showDropdown = open && (suggestions.length > 0 || loading);
+  const showDropdown = open && (suggestions.length > 0 || loading || !!error);
 
   useLayoutEffect(() => {
     if (!showDropdown || !wrapRef.current) {
@@ -33,7 +33,7 @@ export default function AddressInput({ value, onChange, onSelect }) {
       window.removeEventListener("resize", updatePlacement);
       window.removeEventListener("scroll", updatePlacement, true);
     };
-  }, [showDropdown, suggestions, loading, value]);
+  }, [showDropdown, suggestions, loading, error, value]);
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -99,7 +99,12 @@ export default function AddressInput({ value, onChange, onSelect }) {
               width: dropdownPlacement.width,
             }}
           >
-            {loading && suggestions.length === 0 && (
+            {error && (
+              <div className="autocomplete-error" role="alert">
+                {error}
+              </div>
+            )}
+            {loading && suggestions.length === 0 && !error && (
               <div className="autocomplete-loading">Searching...</div>
             )}
             {suggestions.map((item, i) => (

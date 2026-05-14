@@ -9,6 +9,7 @@ import booleanIntersects from '@turf/boolean-intersects';
 import centroid from '@turf/centroid';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import distance from '@turf/distance';
+import { throwIfRateLimited, isHttpRateLimitError } from './httpErrors';
 import { scoreStudentRegion, scoreSchoolDensityHeadcount, scoreSchoolEnrollmentFallback } from './studentRegionScore';
 import { circleAreaSqMi, featureAreaSqMi } from './tractAreaUnits';
 /** Precomputed from tract boundary files: [minLng, minLat, maxLng, maxLat] per state FIPS */
@@ -126,7 +127,7 @@ export const HEATMAP_METRICS = [
   { key: 'Median Rent', field: 'rent' },
   { key: 'Median Home Value', field: 'homeValue' },
   /** Population 3+ enrolled in school (headcount) */
-  { key: 'School', field: 'studentPopulation' },
+  { key: 'Student Density', field: 'studentPopulation' },
 ];
 
 export function isUsApprox(lat, lng) {
@@ -178,6 +179,10 @@ async function fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, 
       });
 
       const res = await fetch(`${layerUrl}?${params.toString()}`, { signal: ac.signal });
+      throwIfRateLimited(
+        res,
+        'Census tract service is rate limited. Wait a minute and try again.',
+      );
       if (!res.ok) return [];
       const gj = await res.json();
       const feats = gj.features || [];
@@ -288,8 +293,8 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
         try {
           features = await fetchTigerTractsIntersectingEnvelope(layerUrl, xmin, ymin, xmax, ymax);
           if (features.length) break;
-        } catch {
-          /* try next layer / retry */
+        } catch (e) {
+          if (isHttpRateLimitError(e)) throw e;
         }
       }
     }
@@ -417,7 +422,7 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
     }
   }
 
-  /** School map score must use the same land sq mi as popups (`featureAreaSqMi`), not precompute AREA_MAP only. */
+  /** Student density map score must use the same land sq mi as popups (`featureAreaSqMi`), not precompute AREA_MAP only. */
   for (const f of filtered) {
     const raw = f.properties.raw;
     const hc = raw?.studentPopulation;
@@ -492,7 +497,7 @@ export async function fetchTractHeatmapGeoJson(centerLat, centerLng, radiusMiles
       'Median Income': weightedScore('income'),
       'Median Rent': weightedScore('rent'),
       'Median Home Value': weightedScore('homeValue'),
-      School:
+      "Student Density":
         studentRegionTractCount > 0 && regionLandAreaSqMi > 0
           ? scoreStudentRegion(studentRegionTotal, regionLandAreaSqMi)
           : null,

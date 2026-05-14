@@ -128,7 +128,7 @@ export default function RecommendationsPanel({
                       <SubScore label="Inc" score={loc.income_score} />
                       <SubScore label="Rent" score={loc.rent_score} />
                       <SubScore label="Home" score={loc.home_value_score} />
-                      <SubScore label="Sch" score={loc.school_score} />
+                      <SubScore label="Dens" score={loc.student_density_score} />
                     </div>
                   </div>
                 </button>

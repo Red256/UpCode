@@ -22,7 +22,7 @@ export default function TractDetailPanel({ tract, onClose }) {
       { key: 'homeValue', label: 'Home Value', format: (v) => formatMedianHomeValueDisplay(v), color: '#a855f7' },
       {
         key: 'studentPopulation',
-        label: 'Students per sq mi',
+        label: 'Student Density',
         format: (v) => {
           if (v == null || Number.isNaN(v) || tractLandSqMi <= 0) return '—';
           const r = Number(v) / tractLandSqMi;

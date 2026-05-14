@@ -1,6 +1,7 @@
 /**
- * Regional School score: R = total students in search circle / (π r²) sq mi; national benchmark is
+ * Regional student-density score: R = total students in search circle / (π r²) sq mi; national benchmark is
  * median and robust scale (MAD × 1.4826) of per-tract students/sq mi. z = (R − median) / sigma.
+ * UI factor label: "Student Density".
  *
  * Per-tract choropleth uses {@link scoreSchoolDensityHeadcount} with the same land area as the UI
  * (gazetteer + polygon fallback), so map colors match “students/sq mi” in popups.

@@ -2,7 +2,7 @@ const FACTOR_DEFAULTS = [
   { key: "Median Income", label: "Median Income", icon: "dollar", defaultValue: 75 },
   { key: "Median Rent", label: "Median Rent", icon: "building", defaultValue: 70 },
   { key: "Median Home Value", label: "Median Home Value", icon: "home", defaultValue: 72 },
-  { key: "School", label: "Students / sq mi (region)", icon: "book", defaultValue: 80 },
+  { key: "Student Density", label: "Student Density", icon: "book", defaultValue: 80 },
 ];
 
 export { FACTOR_DEFAULTS };
@@ -38,13 +38,6 @@ function FactorIcon({ icon }) {
   return icons[icon] || null;
 }
 
-function getSliderColor(value) {
-  if (value >= 80) return "#16a34a";
-  if (value >= 60) return "#2563eb";
-  if (value >= 40) return "#f59e0b";
-  return "#ef4444";
-}
-
 export default function FactorPanel({ factors, onFactorChange, onToggle }) {
   return (
     <div className="card">
@@ -52,7 +45,7 @@ export default function FactorPanel({ factors, onFactorChange, onToggle }) {
       <div className="factors">
         {FACTOR_DEFAULTS.map(({ key, label, icon }) => {
           const f = factors[key];
-          const color = getSliderColor(f.value);
+          const sliderBlue = "#2563eb";
           return (
             <div
               key={key}
@@ -73,7 +66,7 @@ export default function FactorPanel({ factors, onFactorChange, onToggle }) {
                   </span>
                   <span className="name">{label}</span>
                 </div>
-                <span className="val" style={{ color: f.enabled ? color : undefined }}>
+                <span className="val" style={{ color: f.enabled ? sliderBlue : undefined }}>
                   {f.enabled ? `${f.value}% wt` : "--"}
                 </span>
               </div>
@@ -88,7 +81,7 @@ export default function FactorPanel({ factors, onFactorChange, onToggle }) {
                   onChange={(e) => onFactorChange(key, Number(e.target.value))}
                   style={{
                     "--slider-pct": `${f.value}%`,
-                    "--slider-color": f.enabled ? color : "#94a3b8",
+                    "--slider-color": f.enabled ? sliderBlue : "#94a3b8",
                   }}
                 />
               </div>
