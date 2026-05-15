@@ -1948,6 +1948,22 @@ button:disabled {
   color: var(--muted);
 }
 
+.rec-pin-icon { background: transparent; border: none; }
+.rec-pin-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid #0f172a;
+  color: #fff;
+  font-weight: 800;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  line-height: 1;
+}
+
 .rec-verdict {
   font-size: 10px;
   font-weight: 700;
