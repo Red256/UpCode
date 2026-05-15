@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { MapContainer, TileLayer, Circle, CircleMarker, Popup, useMap, Pane } from "react-leaflet";
+import { MapContainer, TileLayer, Circle, CircleMarker, Marker, Popup, useMap, Pane } from "react-leaflet";
+import L from "leaflet";
 import { BEFORE_MAP_CAPTURE, MAP_CAPTURE_ROOT_ID } from "../utils/mapConstants";
 import { FACTOR_DEFAULTS } from "./FactorPanel";
 import { CHOROPLETH_METRIC_WEIGHTED } from "../utils/tractOverallScore";
@@ -97,8 +98,15 @@ export default function MapView({
   const isFreeDrawing = drawingMode === "building";
   const hasFeatures = heatmapData?.features?.length > 0;
   const recPins = Array.isArray(recommendationPins) ? recommendationPins : [];
-  /** Single fill for all recommendation pins (rank shown in popup / panel). */
-  const RECOMMENDATION_PIN_FILL = "#22c55e";
+  /** Score → color: green (great) → blue (good) → yellow (ok) → red (poor). */
+  const recommendationPinColor = (score) => {
+    const s = Number(score);
+    if (!Number.isFinite(s)) return "#2563eb";
+    if (s >= 85) return "#16a34a"; // green — excellent
+    if (s >= 70) return "#2563eb"; // blue — good
+    if (s >= 55) return "#f59e0b"; // yellow — ok
+    return "#ef4444";              // red — poor
+  };
 
   const recommendationPopupTitle = (rec) => {
     const short = (s) =>
@@ -242,18 +250,19 @@ export default function MapView({
             {recPins.map((rec) => {
               const lon = rec.lon ?? rec.lng;
               if (rec.lat == null || lon == null || Number.isNaN(rec.lat) || Number.isNaN(lon)) return null;
+              const fill = recommendationPinColor(rec.score);
+              const icon = L.divIcon({
+                className: "rec-pin-icon",
+                html: `<div class="rec-pin-badge" style="background:${fill}">${rec.rank ?? ""}</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13],
+              });
               return (
-                <CircleMarker
+                <Marker
                   key={`rec-pin-${rec.rank}-${rec.lat}-${lon}`}
-                  center={[rec.lat, lon]}
-                  radius={10}
+                  position={[rec.lat, lon]}
+                  icon={icon}
                   interactive={!isFreeDrawing}
-                  pathOptions={{
-                    color: "#0f172a",
-                    weight: 2,
-                    fillColor: RECOMMENDATION_PIN_FILL,
-                    fillOpacity: 0.92,
-                  }}
                   eventHandlers={{
                     click: () => {
                       if (!isFreeDrawing && onRecommendationPinClick) onRecommendationPinClick(rec);
@@ -269,7 +278,7 @@ export default function MapView({
                       )}
                     </div>
                   </Popup>
-                </CircleMarker>
+                </Marker>
               );
             })}
           </Pane>
