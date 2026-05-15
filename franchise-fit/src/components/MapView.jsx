@@ -75,6 +75,8 @@ export default function MapView({
   heatmapLoading = false,
   heatmapError = null,
   factors,
+  showReturnToAnalyzedSite = false,
+  onReturnToAnalyzedSite,
   recommendationPins = [],
   onRecommendationPinClick,
   onTractClick,
@@ -299,6 +301,21 @@ export default function MapView({
           ) : null}
           {heatmapError && <span className="heatmap-error">{heatmapError}</span>}
         </div>
+      )}
+
+      {showReturnToAnalyzedSite && typeof onReturnToAnalyzedSite === "function" && (
+        <button
+          type="button"
+          className="map-return-analyzed-btn"
+          onClick={onReturnToAnalyzedSite}
+          aria-label="Return to analyzed search location"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M19 12H5" />
+            <path d="M11 19l-7-7 7-7" />
+          </svg>
+          <span>Back to analyzed location</span>
+        </button>
       )}
     </div>
   );

@@ -122,7 +122,7 @@ const FACTOR_COLORS = {
   'Median Income': [59, 130, 246],
   'Median Rent': [16, 185, 129],
   'Median Home Value': [168, 85, 247],
-  School: [251, 146, 60]
+  'Student Density': [251, 146, 60]
 };
 
 function getScoreColor(score) {

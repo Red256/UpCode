@@ -9,6 +9,7 @@ import { fetchCountyAcsRow } from './offlineData';
 import nationalTractZStats from '../data/nationalTractZStats.json';
 import { scoreStudentRegion } from './studentRegionScore';
 import { circleAreaSqMi } from './tractAreaUnits';
+import { throwIfRateLimited } from './httpErrors';
 
 /** @deprecated use ACS_HISTORY_YEARS from censusConstants */
 export const ACS_YEARS = ACS_HISTORY_YEARS;
@@ -66,13 +67,13 @@ function neutralAreaMetrics(year) {
       'Median Income': 50,
       'Median Rent': 50,
       'Median Home Value': 50,
-      School: 50,
+      "Student Density": 50,
     },
     rawValues: {
       'Median Income': '—',
       'Median Rent': '—',
       'Median Home Value': '—',
-      School: '—',
+      "Student Density": '—',
     },
     tracts: [],
     projection: null,
@@ -93,7 +94,7 @@ function metricsToScores(metrics) {
     'Median Income': scoreValueFromZStats(metrics.income, 'income'),
     'Median Rent': scoreValueFromZStats(metrics.rent, 'rent'),
     'Median Home Value': scoreValueFromZStats(metrics.homeValue, 'homeValue'),
-    School: school,
+    "Student Density": school,
   };
 }
 
@@ -103,7 +104,7 @@ function metricsToRawValues(metrics) {
     'Median Rent': metrics.rent != null ? `$${Math.round(metrics.rent).toLocaleString()}` : '—',
     'Median Home Value':
       metrics.homeValue != null ? formatMedianHomeValueDisplay(metrics.homeValue) : '—',
-    School:
+    "Student Density":
       metrics.studentPopulation != null &&
       metrics.studentRegionAreaSqMi != null &&
       metrics.studentRegionAreaSqMi > 0
@@ -182,6 +183,10 @@ export async function geocodeCensusCounty(lng, lat) {
   try {
     const url = `https://geocoding.geo.census.gov/geocoder/geographies/coordinates?x=${lng}&y=${lat}&benchmark=Public_AR_Current&vintage=Current_Current&format=json`;
     const res = await fetch(url);
+    throwIfRateLimited(
+      res,
+      "Census geocoder is rate limited. Wait a moment and try again.",
+    );
     if (!res.ok) return null;
     const data = await res.json();
     const c = data?.result?.geographies?.Counties?.[0];
@@ -435,7 +440,7 @@ export async function fetchAreaMetrics(lat, lng, radiusMiles, year = ACS_DATASET
         'Median Income': coalesceFactorScore(agg.factorScoresOverride['Median Income']),
         'Median Rent': coalesceFactorScore(agg.factorScoresOverride['Median Rent']),
         'Median Home Value': coalesceFactorScore(agg.factorScoresOverride['Median Home Value']),
-        School: coalesceFactorScore(agg.factorScoresOverride.School),
+        "Student Density": coalesceFactorScore(agg.factorScoresOverride["Student Density"]),
       }
     : metricsToScores(metrics);
   const rawValues = metricsToRawValues(metrics);

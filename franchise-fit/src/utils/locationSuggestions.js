@@ -3,6 +3,7 @@ import centroid from "@turf/centroid";
 import distance from "@turf/distance";
 import { point } from "@turf/helpers";
 import { computeOverallFromTractScores } from "./tractOverallScore";
+import { reverseGeocodeLatLng } from "./usGeocode";
 
 function milesFromCenter(lat, lng, centerLat, centerLng) {
   return distance([centerLng, centerLat], [lng, lat], { units: "miles" });
@@ -185,10 +186,6 @@ export async function suggestLocationsInRadiusGradientDescent({
 }
 
 async function defaultReverseGeocode(lat, lng) {
-  const res = await fetch(
-    `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
-  );
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.display_name || null;
+  const hit = await reverseGeocodeLatLng(lat, lng);
+  return hit?.displayName ?? null;
 }

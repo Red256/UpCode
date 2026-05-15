@@ -9,4 +9,17 @@ export default defineConfig(({ mode }) => ({
   optimizeDeps: {
     include: ['osmtogeojson', 'leaflet', 'react-leaflet'],
   },
+  /** Proxy Nominatim to avoid CORS issues in development */
+  server: {
+    proxy: {
+      '/api/nominatim': {
+        target: 'https://nominatim.openstreetmap.org',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/nominatim/, ''),
+        headers: {
+          'User-Agent': 'FranchiseFit/1.0 (dev proxy; contact via github.com)',
+        },
+      },
+    },
+  },
 }))

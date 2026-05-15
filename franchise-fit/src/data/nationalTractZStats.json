@@ -1,6 +1,6 @@
 {
   "acsYear": "2024",
-  "description": "Per metric: national median and robust scale sigma = MAD × 1.4826 over census tracts with valid values. Z-scores use (value − median) / sigma. studentPerSqMi uses per-tract students per land sq mi; regional School uses R = total students / sum tract land areas, z = (R − median) / sigma.",
+  "description": "Per metric: national median and robust scale sigma = MAD × 1.4826 over census tracts with valid values. Z-scores use (value − median) / sigma. studentPerSqMi uses per-tract students per land sq mi; regional student density uses R = total students / sum tract land areas, z = (R − median) / sigma.",
   "income": {
     "median": 77449,
     "sigma": 33291.783,

@@ -3,7 +3,7 @@ export const FACTOR_TO_SCORE_FIELD = {
   "Median Income": "income",
   "Median Rent": "rent",
   "Median Home Value": "homeValue",
-  School: "studentPopulation",
+  "Student Density": "studentPopulation",
 };
 
 /**

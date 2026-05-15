@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import MapView from "./components/MapView";
 import AddressInput from "./components/AddressInput";
 import FactorPanel, { FACTOR_DEFAULTS } from "./components/FactorPanel";
@@ -9,6 +9,11 @@ import { fetchTractHeatmapGeoJson, isUsApprox } from "./utils/tractHeatmap";
 import { fetchAreaMetrics, fetchCountyTrendForReport } from "./utils/censusApi";
 import { suggestLocationsInRadiusGradientDescent } from "./utils/locationSuggestions";
 import { ACS_HISTORY_YEARS } from "./utils/censusConstants";
+import {
+  computeWeightedScore,
+  metricRawValuesFromBreakdown,
+} from "./utils/weightedAreaScore";
+import { isHttpRateLimitError } from "./utils/httpErrors";
 import TractDetailPanel from "./components/TractDetailPanel";
 import CelebrationOverlay from "./components/CelebrationOverlay";
 import Toast from "./components/Toast";
@@ -21,7 +26,7 @@ function attachRecommendationSubscores(areaScores) {
     income_score: areaScores["Median Income"],
     rent_score: areaScores["Median Rent"],
     home_value_score: areaScores["Median Home Value"],
-    school_score: areaScores.School,
+    student_density_score: areaScores["Student Density"],
   };
 }
 
@@ -46,37 +51,6 @@ function buildInitialFactors() {
     out[key] = { value: defaultValue, enabled: true };
   });
   return out;
-}
-
-function computeWeightedScore(factors, factorScores, factorRawValues) {
-  const enabledEntries = Object.entries(factors).filter(([, f]) => f.enabled);
-
-  if (enabledEntries.length === 0) return null;
-
-  let weightedSum = 0;
-  let totalWeight = 0;
-  const breakdown = {};
-
-  enabledEntries.forEach(([key, factor]) => {
-    const weight = factor.value;
-    const score = Number(factorScores[key] ?? 0);
-
-    weightedSum += score * weight;
-    totalWeight += weight;
-
-    breakdown[key] = {
-      factorScore: score,
-      raw_value: factorRawValues[key],
-      contribution: totalWeight === 0 ? 0 : Math.round((score * weight) / totalWeight),
-    };
-  });
-
-  const overall = totalWeight === 0 ? 0 : weightedSum / totalWeight;
-
-  return {
-    overall: Math.round(overall),
-    breakdown,
-  };
 }
 
 export default function App() {
@@ -107,12 +81,50 @@ export default function App() {
   const prevAnalyzedRef = useRef(false);
   /** Side panel: analysis controls vs ranked recommendations (same scoring pipeline). */
   const [resultView, setResultView] = useState(/** @type {'analysis' | 'recommendations'} */ ("analysis"));
-  
+  /** Pin / map view from last successful Analyze — restored after visiting a recommendation. */
+  const [analysisSiteSnapshot, setAnalysisSiteSnapshot] = useState(
+    /** @type {{ center: [number, number], zoom: number, location: string, popupText: string } | null} */ (null),
+  );
+  /** True after user jumps map to a recommendation (until they return to the analyzed site). */
+  const [viewingRecommendationSite, setViewingRecommendationSite] = useState(false);
+
   // Polygon tool state
   const [polygon, setPolygon] = useState(null);
   const [drawingMode, setDrawingMode] = useState(null); // null | "building"
   const [draftPolygon, setDraftPolygon] = useState(null);
-  
+
+  /** Recompute overall + projection from cached factor scores whenever weights/toggles change. */
+  const weightedAnalysisResult = useMemo(() => {
+    if (!analysisResult) return null;
+    const metricRaw =
+      analysisResult.metricRawValues ??
+      metricRawValuesFromBreakdown(analysisResult.raw_values);
+    const weighted = computeWeightedScore(factors, analysisResult.factorScores, metricRaw);
+    if (!weighted) {
+      return { ...analysisResult };
+    }
+    const next = {
+      ...analysisResult,
+      overall: weighted.overall,
+      raw_values: weighted.breakdown,
+    };
+    const proj = analysisResult.projection;
+    if (proj?.factorScores) {
+      const projRaw =
+        proj.projectionMetricRawValues ?? metricRawValuesFromBreakdown(proj.raw_values);
+      const pw = computeWeightedScore(factors, proj.factorScores, projRaw);
+      if (pw) {
+        next.projection = {
+          ...proj,
+          overall: pw.overall,
+          raw_values: pw.breakdown,
+          deltaOverall: pw.overall - weighted.overall,
+        };
+      }
+    }
+    return next;
+  }, [analysisResult, factors]);
+
   // Trigger toast when analysis transitions from running to done
   useEffect(() => {
     if (analyzed && !prevAnalyzedRef.current) {
@@ -155,7 +167,9 @@ export default function App() {
         if (!cancelled && seq === heatmapFetchSeqRef.current) {
           setHeatmapGeoJson({ type: "FeatureCollection", features: [] });
           setHeatmapError(
-            "Tract map could not be loaded. Check your connection or try again in a moment.",
+            isHttpRateLimitError(err)
+              ? err.message
+              : "Tract map could not be loaded. Check your connection or try again in a moment.",
           );
         }
       } finally {
@@ -239,6 +253,7 @@ export default function App() {
     resetCustomShapeSelection();
     setSuggestions([]);
     setSuggestionsLoading(false);
+    setViewingRecommendationSite(false);
     setResultView("analysis");
     setLocation(item.fullName);
     setPopupText(item.fullName);
@@ -247,11 +262,23 @@ export default function App() {
     setHeatmapError(null);
     setHeatmapLoading(true);
 
-    const geo = await geocodeUsAddressFreeform(item.fullName);
-    const lat = geo?.lat ?? item.lat;
-    const lng = geo?.lng ?? item.lng;
-    setCenter([Number(lat), Number(lng)]);
-    setHeatmapLoadGeneration((g) => g + 1);
+    try {
+      const geo = await geocodeUsAddressFreeform(item.fullName);
+      const lat = geo?.lat ?? item.lat;
+      const lng = geo?.lng ?? item.lng;
+      setCenter([Number(lat), Number(lng)]);
+      setHeatmapLoadGeneration((g) => g + 1);
+    } catch (err) {
+      setHeatmapLoading(false);
+      if (isHttpRateLimitError(err)) {
+        alert(err.message);
+      } else {
+        console.error(err);
+        alert(err?.message || "Could not look up that address.");
+      }
+      setCenter([Number(item.lat), Number(item.lng)]);
+      setHeatmapLoadGeneration((g) => g + 1);
+    }
   };
 
   const handleRadiusChange = useCallback((nextRadiusMi) => {
@@ -271,6 +298,8 @@ export default function App() {
     setSelectedTract(null);
     setSuggestions([]);
     setSuggestionsLoading(false);
+    setAnalysisSiteSnapshot(null);
+    setViewingRecommendationSite(false);
 
     try {
       const geo = await geocodeUsAddressFreeform(location);
@@ -298,6 +327,7 @@ export default function App() {
       for (const key of Object.keys(scores)) {
         raw_values[key] = areaData.rawValues[key];
       }
+      const metricRawValues = { ...areaData.rawValues };
 
       const weightedResult = computeWeightedScore(factors, scores, raw_values);
       if (!weightedResult) {
@@ -307,10 +337,11 @@ export default function App() {
 
       let projection = null;
       if (areaData.projection?.factorScores) {
+        const projectionMetricRawValues = { ...areaData.projection.rawValues };
         const projWeighted = computeWeightedScore(
           factors,
           areaData.projection.factorScores,
-          areaData.projection.rawValues
+          projectionMetricRawValues,
         );
         if (projWeighted) {
           const hy = areaData.projection.historyYears;
@@ -335,6 +366,7 @@ export default function App() {
             deltaOverall: projWeighted.overall - weightedResult.overall,
             historyYears: areaData.projection.historyYears,
             sourceNote,
+            projectionMetricRawValues,
           };
         }
       }
@@ -343,10 +375,18 @@ export default function App() {
         factorScores: scores,
         overall: weightedResult.overall,
         raw_values: weightedResult.breakdown,
+        metricRawValues,
         tractCount: areaData.tractCount,
         dataSource: areaData.dataSource,
         acsDatasetYear: areaData.year,
         projection,
+      });
+      const pinLabel = (geo.displayName || location).trim();
+      setAnalysisSiteSnapshot({
+        center: [lat, lng],
+        zoom: 12,
+        location: location.trim(),
+        popupText: pinLabel,
       });
       setAnalyzed(true);
       setAnalysisLocked(true);
@@ -361,7 +401,11 @@ export default function App() {
       );
     } catch (err) {
       console.error("Analysis error:", err);
-      alert(err.message || "Analysis failed. Please try again.");
+      if (isHttpRateLimitError(err)) {
+        alert(err.message);
+      } else {
+        alert(err.message || "Analysis failed. Please try again.");
+      }
     } finally {
       setAnalyzing(false);
     }
@@ -422,6 +466,22 @@ export default function App() {
     }
   }
 
+  const handleReturnToAnalyzedSite = useCallback(() => {
+    const snap = analysisSiteSnapshot;
+    if (!snap) return;
+    setSelectedTract(null);
+    setResultView("analysis");
+    setCenter([snap.center[0], snap.center[1]]);
+    setZoom(snap.zoom);
+    setLocation(snap.location);
+    setPopupText(snap.popupText);
+    setLocationSet(true);
+    setViewingRecommendationSite(false);
+    setHeatmapError(null);
+    setHeatmapLoading(true);
+    setHeatmapLoadGeneration((g) => g + 1);
+  }, [analysisSiteSnapshot]);
+
   const handleSelectSuggestion = (suggestion) => {
     setResultView("analysis");
     setSelectedTract(null);
@@ -455,21 +515,22 @@ export default function App() {
     setZoom(14);
     setPopupText(label);
     setLocationSet(true);
+    setViewingRecommendationSite(true);
     setHeatmapError(null);
     setHeatmapLoading(true);
     setHeatmapLoadGeneration((g) => g + 1);
   };
 
   const handleDownloadReport = async () => {
-    if (!analysisResult) return;
-    
+    if (!weightedAnalysisResult) return;
+
     try {
       const { captureMapToDataUrl } = await import("./utils/mapCapture");
       const mapSnapshot = await captureMapToDataUrl(center, zoom);
       const trendData = await fetchCountyTrendForReport(center[1], center[0]);
       const pdf = await generateLocationReport(
         location,
-        analysisResult,
+        weightedAnalysisResult,
         factors,
         radiusMi,
         center,
@@ -488,7 +549,7 @@ export default function App() {
 
   const enabledCount = Object.values(factors).filter((f) => f.enabled).length;
   const eliteScore =
-    analyzed && analysisResult != null && analysisResult.overall >= 85;
+    analyzed && weightedAnalysisResult != null && weightedAnalysisResult.overall >= 85;
   const wideLayout = analyzing || analyzed;
   const showRecommendationsChrome = analyzed && resultView === "recommendations";
 
@@ -508,6 +569,8 @@ export default function App() {
         heatmapLoading={heatmapLoading}
         heatmapError={heatmapError}
         factors={factors}
+        showReturnToAnalyzedSite={analyzed && viewingRecommendationSite && Boolean(analysisSiteSnapshot)}
+        onReturnToAnalyzedSite={handleReturnToAnalyzedSite}
         recommendationPins={analyzed ? suggestions : []}
         onRecommendationPinClick={handleSelectSuggestion}
         onTractClick={setSelectedTract}
@@ -620,11 +683,11 @@ export default function App() {
         </div>
 
         {/* Score — only after analysis */}
-        {analyzed && analysisResult && (
-          <ScoreCard factors={factors} analysisResult={analysisResult} />
+        {analyzed && weightedAnalysisResult && (
+          <ScoreCard factors={factors} analysisResult={weightedAnalysisResult} />
         )}
 
-        {analyzed && analysisResult && !showRecommendationsChrome && (
+        {analyzed && weightedAnalysisResult && !showRecommendationsChrome && (
           <div className="card">
             <button
               type="button"
@@ -641,7 +704,7 @@ export default function App() {
         )}
 
         {/* Download report — only after analysis */}
-        {analyzed && analysisResult && (
+        {analyzed && weightedAnalysisResult && (
           <div className="card">
             <button
               className="save-btn"
@@ -679,8 +742,8 @@ export default function App() {
         subMessage={
           suggestions.length > 0
             ? `${suggestions.length} recommendation${suggestions.length === 1 ? "" : "s"} identified`
-            : analysisResult
-              ? `Score: ${analysisResult.overall}/100`
+            : weightedAnalysisResult
+              ? `Score: ${weightedAnalysisResult.overall}/100`
               : "Results ready"
         }
       />
