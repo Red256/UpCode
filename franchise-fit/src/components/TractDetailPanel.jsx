@@ -110,9 +110,13 @@ export default function TractDetailPanel({ tract, onClose }) {
             fill: true,
             tension: 0.3,
             pointRadius: values.map((_, i) => (isProjected[i] ? 6 : 4)),
+            pointBackgroundColor: values.map((_, i) => (isProjected[i] ? '#eb890933' : '#2563eb33')),
+            pointBorderColor: values.map((_, i) => (isProjected[i] ? '#eb8909' : '#2563eb')),
+            pointBorderWidth: 2,
             pointStyle: values.map((_, i) => (isProjected[i] ? 'triangle' : 'circle')),
             segment: {
               borderDash: (ctx) => (isProjected[ctx.p1DataIndex] ? [5, 5] : []),
+              borderColor: (ctx) => (isProjected[ctx.p1DataIndex] ? '#eb8909' : '#2563eb'),
             },
           },
         ],

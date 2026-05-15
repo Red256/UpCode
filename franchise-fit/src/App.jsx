@@ -18,6 +18,7 @@ import TractDetailPanel from "./components/TractDetailPanel";
 import CelebrationOverlay from "./components/CelebrationOverlay";
 import Toast from "./components/Toast";
 import RecommendationsPanel from "./components/RecommendationsPanel";
+import logo from "./assets/Logo.png";
 import "./App.css";
 
 /** Census factor keys → RecommendationsPanel sub-score props */
@@ -609,7 +610,14 @@ export default function App() {
         {/* Header */}
         <div className="header">
           <div className="brand">
-            <h1>FranchiseFit</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <img
+                src={logo}
+                alt="FranchiseFit logo"
+                style={{ width: "80px", height: "80px", objectFit: "contain" }}
+              />
+              <h1>FranchiseFit</h1>
+            </div>
             <p>Fast location scoring for franchise and SMB decisions.</p>
           </div>
           <div className="pill">
