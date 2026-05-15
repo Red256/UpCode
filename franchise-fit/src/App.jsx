@@ -663,7 +663,7 @@ export default function App() {
           <button
             className="save-btn analyze-btn"
             onClick={handleAnalyze}
-            disabled={enabledCount === 0 || analyzing || analysisLocked}
+            disabled={enabledCount === 0 || analyzing}
           >
             {analyzing ? (
               <>
