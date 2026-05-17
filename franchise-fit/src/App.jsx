@@ -639,14 +639,25 @@ export default function App() {
               }}
               onSelect={handleSelect}
             />
-            <select
+            <input
+              type="number"
+              min={1}
+              max={15}
+              step={1}
               value={radiusMi}
-              onChange={(e) => handleRadiusChange(Number(e.target.value))}
-            >
-              <option value={3}>3 mi</option>
-              <option value={5}>5 mi</option>
-              <option value={6}>6 mi</option>
-            </select>
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") return;
+                const n = parseInt(raw, 10);
+                if (!Number.isFinite(n)) return;
+                const clamped = Math.max(1, Math.min(15, n));
+                handleRadiusChange(clamped);
+              }}
+              onKeyDown={(e) => {
+                if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault();
+              }}
+              aria-label="Radius in miles (1-15)"
+            />
           </div>
           {locationSet && (
             <div className="location-confirmed">
