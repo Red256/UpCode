@@ -639,25 +639,41 @@ export default function App() {
               }}
               onSelect={handleSelect}
             />
-            <input
-              type="number"
-              min={1}
-              max={15}
-              step={1}
-              value={radiusMi}
-              onChange={(e) => {
-                const raw = e.target.value;
-                if (raw === "") return;
-                const n = parseInt(raw, 10);
-                if (!Number.isFinite(n)) return;
-                const clamped = Math.max(1, Math.min(15, n));
-                handleRadiusChange(clamped);
-              }}
-              onKeyDown={(e) => {
-                if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault();
-              }}
-              aria-label="Radius in miles (1-15)"
-            />
+            <div className="radius-input-wrapper" style={{ position: "relative", display: "inline-block" }}>
+              <input
+                type="number"
+                min={1}
+                max={15}
+                step={1}
+                value={radiusMi}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === "") return;
+                  const n = parseInt(raw, 10);
+                  if (!Number.isFinite(n)) return;
+                  const clamped = Math.max(1, Math.min(15, n));
+                  handleRadiusChange(clamped);
+                }}
+                onKeyDown={(e) => {
+                  if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault();
+                }}
+                aria-label="Radius in miles (1-15)"
+                style={{ paddingRight: "2.25rem" }}
+              />
+              <span
+                style={{
+                  position: "absolute",
+                  right: "0.75rem",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  pointerEvents: "none",
+                  color: "#6b7280",
+                  fontSize: "0.875rem",
+                }}
+              >
+                mi
+              </span>
+            </div>
           </div>
           {locationSet && (
             <div className="location-confirmed">
