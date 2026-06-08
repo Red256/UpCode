@@ -104,11 +104,3 @@ Run from `franchise-fit/` when refreshing census or geospatial assets:
 ## Deployment
 
 Pushes to `main` trigger the GitHub Actions workflow in `.github/workflows/deploy.yml`, which builds `franchise-fit` and publishes to GitHub Pages. Configure **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-
-## Contributors
-
-- [@Red256](https://github.com/Red256) — Alvin
-- [@jacobpanchula](https://github.com/jacobpanchula) — Jacob
-- [@samjm2](https://github.com/samjm2) — Jotin
-- [@Kenneth-Choothakan](https://github.com/Kenneth-Choothakan) — Kenneth
-- [@likeproblem](https://github.com/likeproblem) — Mikhail
