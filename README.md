@@ -2,9 +2,9 @@
 
 A data-driven platform that evaluates potential franchise locations using demographic, education, and regional indicators within a configurable radius to help businesses make smarter expansion decisions.
 
-Built during the **UpCode internship at theCoderSchool** — an 18-week program where a student team delivered a real client product. The result is **FranchiseFit**, a functioning prototype for identifying high-performing sites for new business locations.
+Built during the **UpCode internship at theCoderSchool** — an 18-week project where a team delivered a real client product. The result is **FranchiseFit**, a functioning prototype for identifying high-performing sites for new business locations.
 
-**Live demo:** [https://red256.github.io/PA-UpCode/](https://red256.github.io/PA-UpCode/)
+**Live demo:** [https://red256.github.io/UpCode/](https://red256.github.io/UpCode/)
 
 ## Features
 
