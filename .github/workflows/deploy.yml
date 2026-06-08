@@ -1,4 +1,4 @@
-# Live site: https://red256.github.io/PA-UpCode/
+# Live site: https://red256.github.io/UpCode/
 # Repo → Settings → Pages → Build and deployment → Source: GitHub Actions.
 # Optional: add Repository secrets VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (Settings →
 # Secrets and variables → Actions). Environment-only secrets on "github-pages" are NOT visible
