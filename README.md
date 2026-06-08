@@ -108,7 +108,7 @@ Pushes to `main` trigger the GitHub Actions workflow in `.github/workflows/deplo
 ## Contributors
 
 - [@Red256](https://github.com/Red256) — Alvin
-- [@samjm2](https://github.com/samjm2) - Jotin
-- [@Kenneth-Choothakan](https://github.com/Kenneth-Choothakan) - Kenneth
-- [@jacobpanchula](https://github.com/jacobpanchula) - Jacob
-- [@likeproblem](https://github.com/likeproblem) - Mikhail
+- [@jacobpanchula](https://github.com/jacobpanchula) — Jacob
+- [@samjm2](https://github.com/samjm2) — Jotin
+- [@Kenneth-Choothakan](https://github.com/Kenneth-Choothakan) — Kenneth
+- [@likeproblem](https://github.com/likeproblem) — Mikhail
